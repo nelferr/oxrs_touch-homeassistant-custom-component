@@ -1,0 +1,61 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "title": "Add OXRS Touch Panel",
+        "description": "Enter the panel's MQTT client id (shown on the panel's Settings screen).",
+        "data": {
+          "client_id": "MQTT client id",
+          "name": "Name (optional)"
+        }
+      },
+      "confirm": {
+        "title": "OXRS Touch Panel discovered",
+        "description": "Do you want to add the panel \"{name}\"?"
+      }
+    },
+    "abort": {
+      "already_configured": "This panel is already configured.",
+      "invalid_discovery": "The discovery message could not be parsed.",
+      "not_oxrs_touchpanel": "The discovered device is not an OXRS Touch Panel."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "OXRS Touch Panel",
+        "menu_options": {
+          "add_tile": "Add a tile",
+          "remove_tile": "Remove a tile"
+        }
+      },
+      "add_tile": {
+        "title": "Add a tile — type & screen",
+        "data": {
+          "type": "Tile type",
+          "screen": "Screen number"
+        }
+      },
+      "add_tile_details": {
+        "title": "Add a tile — {type} (screen {screen})",
+        "data": {
+          "tile": "Tile position (free only)",
+          "entity_id": "Bound entity",
+          "label": "Label",
+          "icon": "Icon"
+        }
+      },
+      "remove_tile": {
+        "title": "Remove a tile",
+        "data": {
+          "index": "Tile to remove"
+        }
+      }
+    },
+    "abort": {
+      "no_tiles": "There are no tiles to remove.",
+      "screen_full": "That screen has no free tile positions. Choose another screen or remove a tile first."
+    }
+  }
+}
