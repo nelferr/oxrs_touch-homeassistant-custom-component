@@ -15,6 +15,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_state_change_event
 
 from .const import (
+    CONF_ACTIONS,
     CONF_ENTITY_ID,
     CONF_ICON,
     CONF_LABEL,
@@ -34,6 +35,8 @@ from .const import (
     topic_stat,
     topic_tele,
 )
+from .models import OxrsTile
+from .migrations import has_actions
 from .tiles import TILE_TYPES
 
 _LOGGER = logging.getLogger(__name__)
@@ -91,8 +94,12 @@ class OxrsPanel:
         await self.async_push_config()
 
     def _track_entities(self) -> None:
+        """Track entity changes for tiles with entity bindings (old format)."""
+        # Only track tiles in old format (with entity_id + type)
         entity_ids = [
-            t[CONF_ENTITY_ID] for t in self.tiles if t.get(CONF_ENTITY_ID)
+            t[CONF_ENTITY_ID]
+            for t in self.tiles
+            if t.get(CONF_ENTITY_ID) and not has_actions(t)
         ]
         if entity_ids:
             self._unsubs.append(
@@ -136,17 +143,35 @@ class OxrsPanel:
         for screen_idx, screen_tiles in sorted(screens.items()):
             tiles_conf: list[dict[str, Any]] = []
             for t in sorted(screen_tiles, key=lambda x: x[CONF_TILE]):
-                definition = TILE_TYPES[t[CONF_TYPE]]
-                tile_conf: dict[str, Any] = {
-                    "tile": t[CONF_TILE],
-                    "style": definition["style"],
-                    "label": t.get(CONF_LABEL) or "",
-                    "icon": t.get(CONF_ICON) or definition["icon"],
-                }
-                config_extra = definition.get("config_extra")
-                if config_extra is not None:
-                    tile_conf.update(config_extra(self.hass, t))
+                # Support both old and new tile formats
+                if has_actions(t):
+                    # New format: flexible actions
+                    # Use generic "button" style for all flexible action tiles
+                    tile_conf: dict[str, Any] = {
+                        "tile": t[CONF_TILE],
+                        "style": "button",
+                        "label": t.get(CONF_LABEL) or "",
+                        "icon": t.get(CONF_ICON) or "_onoff",
+                    }
+                else:
+                    # Old format: hardcoded tile type
+                    definition = TILE_TYPES.get(t.get(CONF_TYPE))
+                    if definition is None:
+                        _LOGGER.warning(f"Unknown tile type: {t.get(CONF_TYPE)}")
+                        continue
+                    
+                    tile_conf = {
+                        "tile": t[CONF_TILE],
+                        "style": definition["style"],
+                        "label": t.get(CONF_LABEL) or "",
+                        "icon": t.get(CONF_ICON) or definition["icon"],
+                    }
+                    config_extra = definition.get("config_extra")
+                    if config_extra is not None:
+                        tile_conf.update(config_extra(self.hass, t))
+                
                 tiles_conf.append(tile_conf)
+            
             conf["screens"].append(
                 {
                     "screen": screen_idx,
@@ -167,12 +192,18 @@ class OxrsPanel:
         """Publish current state for every configured tile in one message."""
         payload_tiles: list[dict[str, Any]] = []
         for tile in self.tiles:
-            handler = TILE_TYPES.get(tile[CONF_TYPE])
+            # Skip tiles with flexible actions - they don't have state
+            if has_actions(tile):
+                continue
+            
+            # Process old format tiles with entity bindings
+            handler = TILE_TYPES.get(tile.get(CONF_TYPE))
             if handler is None:
                 continue
             state = handler["build_state"](self.hass, tile)
             if state is not None:
                 payload_tiles.append(state)
+        
         if payload_tiles:
             await mqtt.async_publish(
                 self.hass,
@@ -213,6 +244,7 @@ class OxrsPanel:
             return
         if not isinstance(payload, dict) or "type" not in payload:
             return
+        
         screen = payload.get("screen", 1)
         tile_idx = payload.get("tile", 1)
         tile = next(
@@ -225,9 +257,24 @@ class OxrsPanel:
         )
         if tile is None:
             return
-        handler = TILE_TYPES.get(tile[CONF_TYPE])
-        if handler is None:
+        
+        # NEW: Check if tile has flexible actions
+        if has_actions(tile):
+            # Execute all flexible actions for this tile
+            oxrs_tile = OxrsTile(self.hass, tile)
+            for action in oxrs_tile.actions:
+                # Pass the MQTT payload as variables to templates
+                self.hass.async_create_task(
+                    action.run(data={"payload": payload, "tile_id": f"{screen}_{tile_idx}"})
+                )
             return
+        
+        # OLD: Handle with hardcoded tile type
+        handler = TILE_TYPES.get(tile.get(CONF_TYPE))
+        if handler is None:
+            _LOGGER.warning(f"Unknown tile type: {tile.get(CONF_TYPE)}")
+            return
+        
         self.hass.async_create_task(
             handler["handle_event"](self.hass, tile, payload)
         )

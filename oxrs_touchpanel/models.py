@@ -10,7 +10,17 @@ from homeassistant.core import HomeAssistant, Context
 from homeassistant.helpers.script import Script, async_validate_actions_config
 from homeassistant.helpers import config_validation as cv
 
-from .const import CONF_ACTION_SEQUENCE, CONF_ACTION_MODE
+from .const import (
+    CONF_ACTION_SEQUENCE,
+    CONF_ACTION_MODE,
+    CONF_ACTIONS,
+    CONF_ENTITY_ID,
+    CONF_ICON,
+    CONF_LABEL,
+    CONF_SCREEN,
+    CONF_TILE,
+    CONF_TYPE,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -118,3 +128,67 @@ class OxrsTileAction:
             CONF_ACTION_MODE: self.mode,
             CONF_ACTION_SEQUENCE: self.sequence,
         }
+
+
+class OxrsTile:
+    """Represents a tile configuration with optional flexible actions.
+    
+    Can represent either:
+    - Old format: single entity binding + hardcoded tile type
+    - New format: multiple action sequences
+    
+    Handles both formats transparently for backward compatibility.
+    """
+
+    def __init__(self, hass: HomeAssistant, config: dict[str, Any]):
+        """Initialize a tile configuration.
+        
+        Args:
+            hass: Home Assistant instance
+            config: Tile configuration dict
+        """
+        self.hass = hass
+        self.screen = config.get(CONF_SCREEN, 1)
+        self.tile = config.get(CONF_TILE, 1)
+        self.label = config.get(CONF_LABEL, "")
+        self.icon = config.get(CONF_ICON, "")
+        
+        # Old format support
+        self.entity_id = config.get(CONF_ENTITY_ID)
+        self.tile_type = config.get(CONF_TYPE)
+        
+        # New format support
+        self.actions: list[OxrsTileAction] = []
+        for idx, action_config in enumerate(config.get(CONF_ACTIONS, [])):
+            action = OxrsTileAction(
+                hass,
+                action_config,
+                tile_id=f"{self.screen}_{self.tile}",
+                action_index=idx,
+            )
+            self.actions.append(action)
+
+    def has_actions(self) -> bool:
+        """Check if tile has flexible actions defined."""
+        return len(self.actions) > 0
+
+    def as_dict(self) -> dict[str, Any]:
+        """Convert tile to dictionary for serialization."""
+        result = {
+            CONF_SCREEN: self.screen,
+            CONF_TILE: self.tile,
+            CONF_LABEL: self.label,
+            CONF_ICON: self.icon,
+        }
+        
+        # Include old format if present
+        if self.entity_id:
+            result[CONF_ENTITY_ID] = self.entity_id
+        if self.tile_type:
+            result[CONF_TYPE] = self.tile_type
+        
+        # Include new format if present
+        if self.actions:
+            result[CONF_ACTIONS] = [action.as_dict() for action in self.actions]
+        
+        return result

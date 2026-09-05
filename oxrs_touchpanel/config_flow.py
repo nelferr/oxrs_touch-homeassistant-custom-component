@@ -17,6 +17,9 @@ from homeassistant.helpers.service_info.mqtt import MqttServiceInfo
 
 from .const import (
     BUILTIN_ICONS,
+    CONF_ACTION_MODE,
+    CONF_ACTION_SEQUENCE,
+    CONF_ACTIONS,
     CONF_CLIENT_ID,
     CONF_ENTITY_ID,
     CONF_ICON,
@@ -30,6 +33,7 @@ from .const import (
     DOMAIN,
 )
 from .tiles import TILE_TYPES
+from .migrations import migrate_tile_to_actions
 
 
 def _client_id_from_topic(topic: str) -> str | None:
@@ -122,6 +126,8 @@ class OxrsOptionsFlow(OptionsFlow):
         )
         self._new_type: str | None = None
         self._new_screen: int = 1
+        self._use_flexible_actions: bool = False
+        self._action_sequence: list[dict[str, Any]] | None = None
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -134,10 +140,54 @@ class OxrsOptionsFlow(OptionsFlow):
     async def async_step_add_tile(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Step 1: choose the tile type and target screen."""
+        """Step 1: choose tile format and target screen."""
+        if user_input is not None:
+            self._use_flexible_actions = user_input.get("tile_format") == "flexible"
+            self._new_screen = int(user_input[CONF_SCREEN])
+            
+            if self._use_flexible_actions:
+                # New format: go to flexible actions configuration
+                return await self.async_step_add_tile_actions()
+            else:
+                # Old format: choose tile type
+                return await self.async_step_add_tile_type()
+
+        schema = vol.Schema(
+            {
+                vol.Required("tile_format", default="hardcoded"): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            selector.SelectOptionDict(
+                                value="hardcoded",
+                                label="Hardcoded tile type (light, switch, climate, etc.)",
+                            ),
+                            selector.SelectOptionDict(
+                                value="flexible",
+                                label="Flexible actions (advanced: service sequences, templates, etc.)",
+                            ),
+                        ],
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+                vol.Required(CONF_SCREEN, default=1): selector.NumberSelector(
+                    selector.NumberSelectorConfig(min=1, max=32, mode="box")
+                ),
+            }
+        )
+        return self.async_show_form(
+            step_id="add_tile",
+            data_schema=schema,
+            description_placeholders={
+                "help": "Choose 'Hardcoded' for simple entity control, or 'Flexible' for multi-step automations."
+            },
+        )
+
+    async def async_step_add_tile_type(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Step 1b: choose the tile type (old format)."""
         if user_input is not None:
             self._new_type = user_input[CONF_TYPE]
-            self._new_screen = int(user_input[CONF_SCREEN])
             return await self.async_step_add_tile_details()
 
         type_options = [
@@ -154,12 +204,13 @@ class OxrsOptionsFlow(OptionsFlow):
                         )
                     )
                 ),
-                vol.Required(CONF_SCREEN, default=1): selector.NumberSelector(
-                    selector.NumberSelectorConfig(min=1, max=32, mode="box")
-                ),
             }
         )
-        return self.async_show_form(step_id="add_tile", data_schema=schema)
+        return self.async_show_form(
+            step_id="add_tile_type",
+            data_schema=schema,
+            description_placeholders={"screen": str(self._new_screen)},
+        )
 
     async def async_step_add_tile_details(
         self, user_input: dict[str, Any] | None = None
@@ -223,6 +274,91 @@ class OxrsOptionsFlow(OptionsFlow):
             description_placeholders={
                 "type": definition["label"],
                 "screen": str(self._new_screen),
+            },
+        )
+
+    async def async_step_add_tile_actions(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Configure flexible actions for a new tile."""
+        max_positions = DEFAULT_LAYOUT["horizontal"] * DEFAULT_LAYOUT["vertical"]
+        used = {
+            t[CONF_TILE] for t in self._tiles if t[CONF_SCREEN] == self._new_screen
+        }
+        free = [i for i in range(1, max_positions + 1) if i not in used]
+        
+        if not free:
+            return self.async_abort(reason="screen_full")
+
+        if user_input is not None:
+            # Build the new tile with flexible actions
+            tile_config = {
+                CONF_SCREEN: self._new_screen,
+                CONF_TILE: int(user_input[CONF_TILE]),
+                CONF_LABEL: user_input.get(CONF_LABEL, ""),
+                CONF_ICON: user_input.get(CONF_ICON, ""),
+                CONF_ACTIONS: [
+                    {
+                        CONF_ACTION_MODE: "single",
+                        CONF_ACTION_SEQUENCE: user_input.get(
+                            CONF_ACTION_SEQUENCE, []
+                        ),
+                    }
+                ],
+            }
+            
+            self._tiles.append(tile_config)
+            return self.async_create_entry(title="", data={CONF_TILES: self._tiles})
+
+        tile_options = [
+            selector.SelectOptionDict(value=str(i), label=f"Position {i}")
+            for i in free
+        ]
+
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_TILE, default=str(free[0])
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=tile_options,
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+                vol.Optional(CONF_LABEL, default=""): selector.TextSelector(
+                    selector.TextSelectorConfig(multiline=False)
+                ),
+                vol.Optional(CONF_ICON, default=""): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=BUILTIN_ICONS,
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+                vol.Required(CONF_ACTION_SEQUENCE, default=[]): selector.TextSelector(
+                    selector.TextSelectorConfig(
+                        multiline=True,
+                        mode="yaml",
+                    )
+                ),
+            }
+        )
+
+        return self.async_show_form(
+            step_id="add_tile_actions",
+            data_schema=schema,
+            description_placeholders={
+                "screen": str(self._new_screen),
+                "example": (
+                    "- service: light.turn_on\n"
+                    "  data:\n"
+                    "    entity_id: light.bedroom\n"
+                    "    brightness_pct: 100\n"
+                    "- delay:\n"
+                    "    milliseconds: 500\n"
+                    "- service: scene.turn_on\n"
+                    "  data:\n"
+                    "    entity_id: scene.movie_mode"
+                ),
             },
         )
 
