@@ -19,7 +19,6 @@ from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN, PLATFORMS
 from .hub import OxrsPanel
-from . import models  # noqa: F401 - Imported for module availability
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
