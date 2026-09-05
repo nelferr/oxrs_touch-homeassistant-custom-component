@@ -1,4 +1,16 @@
-"""The OXRS Touch Panel integration."""
+"""The OXRS Touch Panel integration.
+
+Phase 1 (Current): Flexible action sequences support
+- Added OxrsTileAction model supporting Home Assistant Script system
+- Supports service sequences, templates, and conditions
+- Backward compatible with existing tile-based configuration
+- See models.py for implementation details
+
+Future phases:
+- Phase 2: Config UI for action builder
+- Phase 3: Remove hardcoded tile types
+- Phase 4: Advanced features (conditions, retries, error handling)
+"""
 
 from __future__ import annotations
 

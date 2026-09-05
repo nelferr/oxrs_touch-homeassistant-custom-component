@@ -16,13 +16,19 @@ CONF_CLIENT_ID = "client_id"
 CONF_NAME = "name"
 CONF_TILES = "tiles"
 
-# Per-tile keys
+# Per-tile keys (old - kept for backward compatibility)
 CONF_SCREEN = "screen"
 CONF_TILE = "tile"
 CONF_TYPE = "type"
 CONF_ENTITY_ID = "entity_id"
 CONF_LABEL = "label"
 CONF_ICON = "icon"
+
+# Per-tile keys (new - flexible actions)
+CONF_ACTIONS = "actions"
+CONF_ACTION_SEQUENCE = "sequence"
+CONF_ACTION_MODE = "mode"
+CONF_ACTION_CONDITIONS = "conditions"
 
 # Panel defaults (WT32S3-86V/86S are 3x3; smaller panels default to 2x3)
 DEFAULT_LAYOUT = {"horizontal": 3, "vertical": 3}
