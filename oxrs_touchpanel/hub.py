@@ -277,6 +277,7 @@ class OxrsPanel:
                     oxrs_tile = OxrsTile(self.hass, tile)
                     for idx, action in enumerate(oxrs_tile.actions):
                         _LOGGER.debug(f"Running action {idx} for tile {screen}/{tile_idx}")
+                        # run() is async, so we create a task for it
                         self.hass.async_create_task(
                             action.run(
                                 data={

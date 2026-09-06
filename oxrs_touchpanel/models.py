@@ -59,18 +59,26 @@ class OxrsTileAction:
         self.mode = config.get(CONF_ACTION_MODE, "single")
         self.sequence = config.get(CONF_ACTION_SEQUENCE, [])
         self.script: Script | None = None
+        self._script_init_lock = False
         self.active = bool(self.sequence)
 
-        # Validate and initialize script asynchronously
-        if self.active:
-            asyncio.create_task(self._init_script())
-
-    async def _init_script(self) -> None:
-        """Initialize the Script object with validated sequence."""
+    async def _ensure_script_initialized(self) -> bool:
+        """Initialize the Script object if not already done."""
+        if self.script is not None:
+            return True
+        
         if not self.sequence:
             self.active = False
-            return
-
+            return False
+        
+        # Prevent re-initialization if already in progress
+        if self._script_init_lock:
+            # Wait a bit for initialization to complete
+            await asyncio.sleep(0.1)
+            return self.script is not None
+        
+        self._script_init_lock = True
+        
         try:
             # Validate the sequence using Home Assistant's schema
             validated_sequence = await async_validate_actions_config(
@@ -93,12 +101,17 @@ class OxrsTileAction:
                 script_mode=self.mode,
             )
             _LOGGER.debug(f"Initialized action: {script_name}")
+            return True
 
         except Exception as err:  # noqa: BLE001
             _LOGGER.error(
-                f"Failed to initialize action {self.tile_id}/{self.action_index}: {err}"
+                f"Failed to initialize action {self.tile_id}/{self.action_index}: {err}",
+                exc_info=True,
             )
             self.active = False
+            return False
+        finally:
+            self._script_init_lock = False
 
     async def run(
         self, data: dict[str, Any] | None = None, context: Context | None = None
@@ -109,18 +122,35 @@ class OxrsTileAction:
             data: Variables to pass to the script (will be accessible in templates)
             context: Home Assistant context for the execution
         """
-        if not self.script:
+        if not self.active:
             _LOGGER.debug(
+                f"Action not active: {self.tile_id}/{self.action_index}"
+            )
+            return
+
+        # Ensure script is initialized before running
+        if not await self._ensure_script_initialized():
+            _LOGGER.error(
+                f"Could not initialize script for action {self.tile_id}/{self.action_index}"
+            )
+            return
+
+        if not self.script:
+            _LOGGER.error(
                 f"No script available for action {self.tile_id}/{self.action_index}"
             )
             return
 
-        _LOGGER.debug(
-            f"Running action sequence: {self.tile_id}/{self.action_index}"
-        )
-        self.hass.async_create_task(
-            self.script.async_run(run_variables=data or {}, context=context)
-        )
+        try:
+            _LOGGER.debug(
+                f"Running action sequence: {self.tile_id}/{self.action_index}"
+            )
+            await self.script.async_run(run_variables=data or {}, context=context)
+        except Exception as err:
+            _LOGGER.error(
+                f"Error running action {self.tile_id}/{self.action_index}: {err}",
+                exc_info=True,
+            )
 
     def as_dict(self) -> dict[str, Any]:
         """Convert action to dictionary for serialization."""
