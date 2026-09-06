@@ -6,7 +6,6 @@ import logging
 from typing import Any
 
 import voluptuous as vol
-import yaml
 from homeassistant.config_entries import (
     ConfigEntry,
     ConfigFlow,
@@ -290,34 +289,10 @@ class OxrsOptionsFlow(OptionsFlow):
             return self.async_abort(reason="screen_full")
 
         if user_input is not None:
-            # Parse YAML sequence from user input
-            yaml_text = user_input.get(CONF_ACTION_SEQUENCE, "")
-            try:
-                if yaml_text.strip():
-                    sequence = yaml.safe_load(yaml_text)
-                    if not isinstance(sequence, list):
-                        return self.async_show_form(
-                            step_id="add_tile_actions",
-                            data_schema=self._build_add_tile_actions_schema(free),
-                            errors={"base": "invalid_yaml"},
-                            description_placeholders={
-                                "screen": str(self._new_screen),
-                                "example": self._get_yaml_example(),
-                            },
-                        )
-                else:
-                    sequence = []
-            except yaml.YAMLError as err:
-                _LOGGER.warning(f"YAML parse error: {err}")
-                return self.async_show_form(
-                    step_id="add_tile_actions",
-                    data_schema=self._build_add_tile_actions_schema(free),
-                    errors={"base": "invalid_yaml"},
-                    description_placeholders={
-                        "screen": str(self._new_screen),
-                        "example": self._get_yaml_example(),
-                    },
-                )
+            # ActionSelector returns a list of actions directly
+            sequence = user_input.get(CONF_ACTION_SEQUENCE, [])
+            if not isinstance(sequence, list):
+                sequence = [sequence] if sequence else []
             
             # Build the new tile with flexible actions
             action_entity = user_input.get(CONF_ACTION_ENTITY, "").strip() or None
@@ -329,7 +304,7 @@ class OxrsOptionsFlow(OptionsFlow):
                 CONF_ICON: user_input.get(CONF_ICON, ""),
                 CONF_ACTIONS: [
                     {
-                        CONF_ACTION_MODE: "single",
+                        CONF_ACTION_MODE: user_input.get(CONF_ACTION_MODE, "single"),
                         CONF_ACTION_SEQUENCE: sequence,
                     }
                 ],
@@ -347,12 +322,11 @@ class OxrsOptionsFlow(OptionsFlow):
             data_schema=self._build_add_tile_actions_schema(free),
             description_placeholders={
                 "screen": str(self._new_screen),
-                "example": self._get_yaml_example(),
             },
         )
     
     def _build_add_tile_actions_schema(self, free: list[int]) -> vol.Schema:
-        """Build the schema for adding tile actions."""
+        """Build the schema for adding tile actions with proper action builder."""
         tile_options = [
             {"value": str(i), "label": f"Position {i}"}
             for i in free
@@ -380,25 +354,19 @@ class OxrsOptionsFlow(OptionsFlow):
                 vol.Optional(CONF_ACTION_ENTITY, default=""): selector.EntitySelector(
                     selector.EntitySelectorConfig()
                 ),
-                vol.Required(CONF_ACTION_SEQUENCE, default=""): selector.TextSelector(
-                    selector.TextSelectorConfig(multiline=True)
+                vol.Required(CONF_ACTION_MODE, default="single"): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            {"value": "single", "label": "Single (one at a time)"},
+                            {"value": "parallel", "label": "Parallel (all at once)"},
+                            {"value": "queued", "label": "Queued (wait for each)"},
+                            {"value": "restart", "label": "Restart (restart if triggered again)"},
+                        ],
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
                 ),
+                vol.Required(CONF_ACTION_SEQUENCE, default=[]): selector.ActionsSelector(),
             }
-        )
-    
-    @staticmethod
-    def _get_yaml_example() -> str:
-        """Get example YAML for action sequences."""
-        return (
-            "- service: light.turn_on\n"
-            "  data:\n"
-            "    entity_id: light.bedroom\n"
-            "    brightness_pct: 100\n"
-            "- delay:\n"
-            "    milliseconds: 500\n"
-            "- service: scene.turn_on\n"
-            "  data:\n"
-            "    entity_id: scene.movie_mode"
         )
 
     async def async_step_remove_tile(
