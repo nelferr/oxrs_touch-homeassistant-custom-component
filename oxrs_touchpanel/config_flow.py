@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import voluptuous as vol
+import yaml
 from homeassistant.config_entries import (
     ConfigEntry,
     ConfigFlow,
@@ -14,6 +16,8 @@ from homeassistant.config_entries import (
 from homeassistant.core import callback
 from homeassistant.helpers import selector
 from homeassistant.helpers.service_info.mqtt import MqttServiceInfo
+
+_LOGGER = logging.getLogger(__name__)
 
 from .const import (
     BUILTIN_ICONS,
@@ -285,6 +289,35 @@ class OxrsOptionsFlow(OptionsFlow):
             return self.async_abort(reason="screen_full")
 
         if user_input is not None:
+            # Parse YAML sequence from user input
+            yaml_text = user_input.get(CONF_ACTION_SEQUENCE, "")
+            try:
+                if yaml_text.strip():
+                    sequence = yaml.safe_load(yaml_text)
+                    if not isinstance(sequence, list):
+                        return self.async_show_form(
+                            step_id="add_tile_actions",
+                            data_schema=self._build_add_tile_actions_schema(free),
+                            errors={"base": "invalid_yaml"},
+                            description_placeholders={
+                                "screen": str(self._new_screen),
+                                "example": self._get_yaml_example(),
+                            },
+                        )
+                else:
+                    sequence = []
+            except yaml.YAMLError as err:
+                _LOGGER.warning(f"YAML parse error: {err}")
+                return self.async_show_form(
+                    step_id="add_tile_actions",
+                    data_schema=self._build_add_tile_actions_schema(free),
+                    errors={"base": "invalid_yaml"},
+                    description_placeholders={
+                        "screen": str(self._new_screen),
+                        "example": self._get_yaml_example(),
+                    },
+                )
+            
             # Build the new tile with flexible actions
             tile_config = {
                 CONF_SCREEN: self._new_screen,
@@ -294,9 +327,7 @@ class OxrsOptionsFlow(OptionsFlow):
                 CONF_ACTIONS: [
                     {
                         CONF_ACTION_MODE: "single",
-                        CONF_ACTION_SEQUENCE: user_input.get(
-                            CONF_ACTION_SEQUENCE, []
-                        ),
+                        CONF_ACTION_SEQUENCE: sequence,
                     }
                 ],
             }
@@ -304,12 +335,23 @@ class OxrsOptionsFlow(OptionsFlow):
             self._tiles.append(tile_config)
             return self.async_create_entry(title="", data={CONF_TILES: self._tiles})
 
+        return self.async_show_form(
+            step_id="add_tile_actions",
+            data_schema=self._build_add_tile_actions_schema(free),
+            description_placeholders={
+                "screen": str(self._new_screen),
+                "example": self._get_yaml_example(),
+            },
+        )
+    
+    def _build_add_tile_actions_schema(self, free: list[int]) -> vol.Schema:
+        """Build the schema for adding tile actions."""
         tile_options = [
             {"value": str(i), "label": f"Position {i}"}
             for i in free
         ]
 
-        schema = vol.Schema(
+        return vol.Schema(
             {
                 vol.Required(
                     CONF_TILE, default=str(free[0])
@@ -328,32 +370,25 @@ class OxrsOptionsFlow(OptionsFlow):
                         mode=selector.SelectSelectorMode.DROPDOWN,
                     )
                 ),
-                vol.Required(CONF_ACTION_SEQUENCE, default=[]): selector.TextSelector(
-                    selector.TextSelectorConfig(
-                        multiline=True,
-                        mode="yaml",
-                    )
+                vol.Required(CONF_ACTION_SEQUENCE, default=""): selector.TextSelector(
+                    selector.TextSelectorConfig(multiline=True)
                 ),
             }
         )
-
-        return self.async_show_form(
-            step_id="add_tile_actions",
-            data_schema=schema,
-            description_placeholders={
-                "screen": str(self._new_screen),
-                "example": (
-                    "- service: light.turn_on\n"
-                    "  data:\n"
-                    "    entity_id: light.bedroom\n"
-                    "    brightness_pct: 100\n"
-                    "- delay:\n"
-                    "    milliseconds: 500\n"
-                    "- service: scene.turn_on\n"
-                    "  data:\n"
-                    "    entity_id: scene.movie_mode"
-                ),
-            },
+    
+    @staticmethod
+    def _get_yaml_example() -> str:
+        """Get example YAML for action sequences."""
+        return (
+            "- service: light.turn_on\n"
+            "  data:\n"
+            "    entity_id: light.bedroom\n"
+            "    brightness_pct: 100\n"
+            "- delay:\n"
+            "    milliseconds: 500\n"
+            "- service: scene.turn_on\n"
+            "  data:\n"
+            "    entity_id: scene.movie_mode"
         )
 
     async def async_step_remove_tile(
