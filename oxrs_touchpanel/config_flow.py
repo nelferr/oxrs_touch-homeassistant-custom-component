@@ -157,14 +157,8 @@ class OxrsOptionsFlow(OptionsFlow):
                 vol.Required("tile_format", default="hardcoded"): selector.SelectSelector(
                     selector.SelectSelectorConfig(
                         options=[
-                            selector.SelectOptionDict(
-                                value="hardcoded",
-                                label="Hardcoded tile type (light, switch, climate, etc.)",
-                            ),
-                            selector.SelectOptionDict(
-                                value="flexible",
-                                label="Flexible actions (advanced: service sequences, templates, etc.)",
-                            ),
+                            {"value": "hardcoded", "label": "Hardcoded tile type (light, switch, climate, etc.)"},
+                            {"value": "flexible", "label": "Flexible actions (advanced: service sequences, templates, etc.)"},
                         ],
                         mode=selector.SelectSelectorMode.DROPDOWN,
                     )
@@ -191,7 +185,7 @@ class OxrsOptionsFlow(OptionsFlow):
             return await self.async_step_add_tile_details()
 
         type_options = [
-            selector.SelectOptionDict(value=key, label=defn["label"])
+            {"value": key, "label": defn["label"]}
             for key, defn in TILE_TYPES.items()
         ]
         schema = vol.Schema(
@@ -241,7 +235,7 @@ class OxrsOptionsFlow(OptionsFlow):
             return self.async_create_entry(title="", data={CONF_TILES: self._tiles})
 
         tile_options = [
-            selector.SelectOptionDict(value=str(i), label=f"Position {i}")
+            {"value": str(i), "label": f"Position {i}"}
             for i in free
         ]
         schema = vol.Schema(
@@ -311,7 +305,7 @@ class OxrsOptionsFlow(OptionsFlow):
             return self.async_create_entry(title="", data={CONF_TILES: self._tiles})
 
         tile_options = [
-            selector.SelectOptionDict(value=str(i), label=f"Position {i}")
+            {"value": str(i), "label": f"Position {i}"}
             for i in free
         ]
 
@@ -373,14 +367,14 @@ class OxrsOptionsFlow(OptionsFlow):
             return self.async_create_entry(title="", data={CONF_TILES: self._tiles})
 
         options = [
-            selector.SelectOptionDict(
-                value=str(index),
-                label=(
+            {
+                "value": str(index),
+                "label": (
                     f"S{tile[CONF_SCREEN]}·T{tile[CONF_TILE]} "
                     f"[{tile.get(CONF_TYPE, '')}] "
-                    f"{tile.get(CONF_LABEL) or ''} ({tile[CONF_ENTITY_ID]})"
+                    f"{tile.get(CONF_LABEL) or ''} ({tile.get(CONF_ENTITY_ID, 'N/A')})"
                 ),
-            )
+            }
             for index, tile in enumerate(self._tiles)
         ]
         schema = vol.Schema(
