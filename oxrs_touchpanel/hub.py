@@ -15,6 +15,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_state_change_event
 
 from .const import (
+    CONF_ACTION_ENTITY,
     CONF_ACTIONS,
     CONF_ENTITY_ID,
     CONF_ICON,
