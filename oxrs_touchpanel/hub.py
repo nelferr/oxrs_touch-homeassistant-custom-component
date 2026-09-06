@@ -36,7 +36,6 @@ from .const import (
     topic_tele,
 )
 from .models import OxrsTile
-from .migrations import has_actions
 from .tiles import TILE_TYPES
 
 _LOGGER = logging.getLogger(__name__)
@@ -99,7 +98,7 @@ class OxrsPanel:
         entity_ids = [
             t[CONF_ENTITY_ID]
             for t in self.tiles
-            if t.get(CONF_ENTITY_ID) and not has_actions(t)
+            if t.get(CONF_ENTITY_ID) and (CONF_TYPE in t)
         ]
         if entity_ids:
             self._unsubs.append(
@@ -144,7 +143,7 @@ class OxrsPanel:
             tiles_conf: list[dict[str, Any]] = []
             for t in sorted(screen_tiles, key=lambda x: x[CONF_TILE]):
                 # Support both old and new tile formats
-                if has_actions(t):
+                if CONF_ACTIONS in t and t.get(CONF_ACTIONS):
                     # New format: flexible actions
                     # Use generic "button" style for all flexible action tiles
                     tile_conf: dict[str, Any] = {
@@ -155,9 +154,10 @@ class OxrsPanel:
                     }
                 else:
                     # Old format: hardcoded tile type
-                    definition = TILE_TYPES.get(t.get(CONF_TYPE))
+                    tile_type = t.get(CONF_TYPE)
+                    definition = TILE_TYPES.get(tile_type)
                     if definition is None:
-                        _LOGGER.warning(f"Unknown tile type: {t.get(CONF_TYPE)}")
+                        _LOGGER.warning(f"Unknown tile type: {tile_type}")
                         continue
                     
                     tile_conf = {
@@ -193,11 +193,12 @@ class OxrsPanel:
         payload_tiles: list[dict[str, Any]] = []
         for tile in self.tiles:
             # Skip tiles with flexible actions - they don't have state
-            if has_actions(tile):
+            if CONF_ACTIONS in tile and tile.get(CONF_ACTIONS):
                 continue
             
             # Process old format tiles with entity bindings
-            handler = TILE_TYPES.get(tile.get(CONF_TYPE))
+            tile_type = tile.get(CONF_TYPE)
+            handler = TILE_TYPES.get(tile_type)
             if handler is None:
                 continue
             state = handler["build_state"](self.hass, tile)
@@ -241,43 +242,76 @@ class OxrsPanel:
         try:
             payload = json.loads(msg.payload)
         except (ValueError, TypeError):
+            _LOGGER.debug(f"Failed to parse MQTT payload: {msg.payload}")
             return
+        
         if not isinstance(payload, dict) or "type" not in payload:
+            _LOGGER.debug(f"Invalid payload format: {payload}")
             return
         
         screen = payload.get("screen", 1)
         tile_idx = payload.get("tile", 1)
-        tile = next(
-            (
-                t
-                for t in self.tiles
-                if t[CONF_SCREEN] == screen and t[CONF_TILE] == tile_idx
-            ),
-            None,
-        )
+        
+        try:
+            tile = next(
+                (
+                    t
+                    for t in self.tiles
+                    if t[CONF_SCREEN] == screen and t[CONF_TILE] == tile_idx
+                ),
+                None,
+            )
+        except Exception as err:
+            _LOGGER.error(f"Error finding tile {screen}/{tile_idx}: {err}")
+            return
+        
         if tile is None:
+            _LOGGER.debug(f"Tile not found: screen={screen}, tile={tile_idx}")
             return
         
-        # NEW: Check if tile has flexible actions
-        if has_actions(tile):
-            # Execute all flexible actions for this tile
-            oxrs_tile = OxrsTile(self.hass, tile)
-            for action in oxrs_tile.actions:
-                # Pass the MQTT payload as variables to templates
-                self.hass.async_create_task(
-                    action.run(data={"payload": payload, "tile_id": f"{screen}_{tile_idx}"})
-                )
-            return
-        
-        # OLD: Handle with hardcoded tile type
-        handler = TILE_TYPES.get(tile.get(CONF_TYPE))
-        if handler is None:
-            _LOGGER.warning(f"Unknown tile type: {tile.get(CONF_TYPE)}")
-            return
-        
-        self.hass.async_create_task(
-            handler["handle_event"](self.hass, tile, payload)
-        )
+        try:
+            # NEW: Check if tile has flexible actions (new format)
+            if CONF_ACTIONS in tile and tile.get(CONF_ACTIONS):
+                _LOGGER.debug(f"Processing flexible actions for tile {screen}/{tile_idx}")
+                try:
+                    oxrs_tile = OxrsTile(self.hass, tile)
+                    for idx, action in enumerate(oxrs_tile.actions):
+                        _LOGGER.debug(f"Running action {idx} for tile {screen}/{tile_idx}")
+                        self.hass.async_create_task(
+                            action.run(
+                                data={
+                                    "payload": payload,
+                                    "tile_id": f"{screen}_{tile_idx}",
+                                }
+                            )
+                        )
+                except Exception as err:
+                    _LOGGER.error(
+                        f"Error processing flexible actions for {screen}/{tile_idx}: {err}",
+                        exc_info=True,
+                    )
+                return
+            
+            # OLD: Handle with hardcoded tile type
+            tile_type = tile.get(CONF_TYPE)
+            if not tile_type:
+                _LOGGER.warning(f"Tile {screen}/{tile_idx} has no type or actions")
+                return
+            
+            handler = TILE_TYPES.get(tile_type)
+            if handler is None:
+                _LOGGER.warning(f"Unknown tile type: {tile_type}")
+                return
+            
+            _LOGGER.debug(f"Processing {tile_type} tile {screen}/{tile_idx}")
+            self.hass.async_create_task(
+                handler["handle_event"](self.hass, tile, payload)
+            )
+        except Exception as err:
+            _LOGGER.error(
+                f"Unexpected error in _on_stat for {screen}/{tile_idx}: {err}",
+                exc_info=True,
+            )
 
     @callback
     def _on_lwt(self, msg: mqtt.ReceiveMessage) -> None:
