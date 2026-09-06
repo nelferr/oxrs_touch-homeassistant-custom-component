@@ -29,6 +29,7 @@ CONF_ACTIONS = "actions"
 CONF_ACTION_SEQUENCE = "sequence"
 CONF_ACTION_MODE = "mode"
 CONF_ACTION_CONDITIONS = "conditions"
+CONF_ACTION_ENTITY = "action_entity"  # Optional entity for display/feedback
 
 # Panel defaults (WT32S3-86V/86S are 3x3; smaller panels default to 2x3)
 DEFAULT_LAYOUT = {"horizontal": 3, "vertical": 3}

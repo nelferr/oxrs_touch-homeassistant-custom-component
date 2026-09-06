@@ -21,6 +21,7 @@ _LOGGER = logging.getLogger(__name__)
 
 from .const import (
     BUILTIN_ICONS,
+    CONF_ACTION_ENTITY,
     CONF_ACTION_MODE,
     CONF_ACTION_SEQUENCE,
     CONF_ACTIONS,
@@ -319,6 +320,8 @@ class OxrsOptionsFlow(OptionsFlow):
                 )
             
             # Build the new tile with flexible actions
+            action_entity = user_input.get(CONF_ACTION_ENTITY, "").strip() or None
+            
             tile_config = {
                 CONF_SCREEN: self._new_screen,
                 CONF_TILE: int(user_input[CONF_TILE]),
@@ -331,6 +334,10 @@ class OxrsOptionsFlow(OptionsFlow):
                     }
                 ],
             }
+            
+            # Optional: bind to an entity for display/feedback
+            if action_entity:
+                tile_config[CONF_ACTION_ENTITY] = action_entity
             
             self._tiles.append(tile_config)
             return self.async_create_entry(title="", data={CONF_TILES: self._tiles})
@@ -369,6 +376,9 @@ class OxrsOptionsFlow(OptionsFlow):
                         options=BUILTIN_ICONS,
                         mode=selector.SelectSelectorMode.DROPDOWN,
                     )
+                ),
+                vol.Optional(CONF_ACTION_ENTITY, default=""): selector.EntitySelector(
+                    selector.EntitySelectorConfig()
                 ),
                 vol.Required(CONF_ACTION_SEQUENCE, default=""): selector.TextSelector(
                     selector.TextSelectorConfig(multiline=True)
