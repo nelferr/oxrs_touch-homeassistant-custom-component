@@ -145,229 +145,297 @@ class OxrsOptionsFlow(OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Step 1: choose tile format and target screen."""
-        if user_input is not None:
-            self._use_flexible_actions = user_input.get("tile_format") == "flexible"
-            self._new_screen = int(user_input[CONF_SCREEN])
+        try:
+            _LOGGER.debug(f"async_step_add_tile called with input: {user_input}")
             
-            if self._use_flexible_actions:
-                # New format: go to flexible actions configuration
-                return await self.async_step_add_tile_actions()
-            else:
-                # Old format: choose tile type
-                return await self.async_step_add_tile_type()
+            if user_input is not None:
+                self._use_flexible_actions = user_input.get("tile_format") == "flexible"
+                self._new_screen = int(user_input[CONF_SCREEN])
+                
+                _LOGGER.debug(f"User chose format: {'flexible' if self._use_flexible_actions else 'hardcoded'}, screen: {self._new_screen}")
+                
+                if self._use_flexible_actions:
+                    # New format: go to flexible actions configuration
+                    return await self.async_step_add_tile_actions()
+                else:
+                    # Old format: choose tile type
+                    return await self.async_step_add_tile_type()
 
-        schema = vol.Schema(
-            {
-                vol.Required("tile_format", default="hardcoded"): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=[
-                            {"value": "hardcoded", "label": "Hardcoded tile type (light, switch, climate, etc.)"},
-                            {"value": "flexible", "label": "Flexible actions (advanced: service sequences, templates, etc.)"},
-                        ],
-                        mode=selector.SelectSelectorMode.DROPDOWN,
-                    )
-                ),
-                vol.Required(CONF_SCREEN, default=1): selector.NumberSelector(
-                    selector.NumberSelectorConfig(min=1, max=32, mode="box")
-                ),
-            }
-        )
-        return self.async_show_form(
-            step_id="add_tile",
-            data_schema=schema,
-            description_placeholders={
-                "help": "Choose 'Hardcoded' for simple entity control, or 'Flexible' for multi-step automations."
-            },
-        )
+            schema = vol.Schema(
+                {
+                    vol.Required("tile_format", default="hardcoded"): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[
+                                {"value": "hardcoded", "label": "Hardcoded tile type (light, switch, climate, etc.)"},
+                                {"value": "flexible", "label": "Flexible actions (advanced: service sequences, templates, etc.)"},
+                            ],
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                    vol.Required(CONF_SCREEN, default=1): selector.NumberSelector(
+                        selector.NumberSelectorConfig(min=1, max=32, mode="box")
+                    ),
+                }
+            )
+            
+            _LOGGER.debug("Showing initial tile format selection form")
+            return self.async_show_form(
+                step_id="add_tile",
+                data_schema=schema,
+                description_placeholders={
+                    "help": "Choose 'Hardcoded' for simple entity control, or 'Flexible' for multi-step automations."
+                },
+            )
+        except Exception as err:
+            _LOGGER.error(f"Error in async_step_add_tile: {err}", exc_info=True)
+            return self.async_abort(reason="invalid_format")
 
     async def async_step_add_tile_type(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Step 1b: choose the tile type (old format)."""
-        if user_input is not None:
-            self._new_type = user_input[CONF_TYPE]
-            return await self.async_step_add_tile_details()
+        try:
+            _LOGGER.debug(f"async_step_add_tile_type called with input: {user_input}")
+            
+            if user_input is not None:
+                self._new_type = user_input[CONF_TYPE]
+                _LOGGER.debug(f"User chose tile type: {self._new_type}")
+                return await self.async_step_add_tile_details()
 
-        type_options = [
-            {"value": key, "label": defn["label"]}
-            for key, defn in TILE_TYPES.items()
-        ]
-        schema = vol.Schema(
-            {
-                vol.Required(CONF_TYPE, default=next(iter(TILE_TYPES))): (
-                    selector.SelectSelector(
-                        selector.SelectSelectorConfig(
-                            options=type_options,
-                            mode=selector.SelectSelectorMode.DROPDOWN,
+            type_options = [
+                {"value": key, "label": defn["label"]}
+                for key, defn in TILE_TYPES.items()
+            ]
+            
+            _LOGGER.debug(f"Available tile types: {[opt['value'] for opt in type_options]}")
+            
+            schema = vol.Schema(
+                {
+                    vol.Required(CONF_TYPE, default=next(iter(TILE_TYPES))): (
+                        selector.SelectSelector(
+                            selector.SelectSelectorConfig(
+                                options=type_options,
+                                mode=selector.SelectSelectorMode.DROPDOWN,
+                            )
                         )
-                    )
-                ),
-            }
-        )
-        return self.async_show_form(
-            step_id="add_tile_type",
-            data_schema=schema,
-            description_placeholders={"screen": str(self._new_screen)},
-        )
+                    ),
+                }
+            )
+            
+            _LOGGER.debug("Showing tile type selection form")
+            return self.async_show_form(
+                step_id="add_tile_type",
+                data_schema=schema,
+                description_placeholders={"screen": str(self._new_screen)},
+            )
+        except Exception as err:
+            _LOGGER.error(f"Error in async_step_add_tile_type: {err}", exc_info=True)
+            return self.async_abort(reason="invalid_type")
 
     async def async_step_add_tile_details(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Step 2: pick a FREE position, the entity, label and icon."""
-        assert self._new_type is not None
-        definition = TILE_TYPES[self._new_type]
+        try:
+            _LOGGER.debug(f"async_step_add_tile_details called with input: {list(user_input.keys()) if user_input else 'None'}")
+            
+            assert self._new_type is not None
+            definition = TILE_TYPES[self._new_type]
+            _LOGGER.debug(f"Tile type definition: {self._new_type}")
 
-        max_positions = DEFAULT_LAYOUT["horizontal"] * DEFAULT_LAYOUT["vertical"]
-        used = {
-            t[CONF_TILE] for t in self._tiles if t[CONF_SCREEN] == self._new_screen
-        }
-        free = [i for i in range(1, max_positions + 1) if i not in used]
-        if not free:
-            return self.async_abort(reason="screen_full")
+            max_positions = DEFAULT_LAYOUT["horizontal"] * DEFAULT_LAYOUT["vertical"]
+            used = {
+                t[CONF_TILE] for t in self._tiles if t[CONF_SCREEN] == self._new_screen
+            }
+            free = [i for i in range(1, max_positions + 1) if i not in used]
+            
+            _LOGGER.debug(f"Free positions: {free}")
+            
+            if not free:
+                _LOGGER.warning(f"Screen {self._new_screen} is full")
+                return self.async_abort(reason="screen_full")
 
-        if user_input is not None:
-            self._tiles.append(
+            if user_input is not None:
+                _LOGGER.debug(f"Creating hardcoded tile with entity: {user_input[CONF_ENTITY_ID]}")
+                self._tiles.append(
+                    {
+                        CONF_SCREEN: self._new_screen,
+                        CONF_TILE: int(user_input[CONF_TILE]),
+                        CONF_TYPE: self._new_type,
+                        CONF_ENTITY_ID: user_input[CONF_ENTITY_ID],
+                        CONF_LABEL: user_input.get(CONF_LABEL, ""),
+                        CONF_ICON: user_input.get(CONF_ICON, definition["icon"]),
+                    }
+                )
+                _LOGGER.info(f"Hardcoded tile created at {self._new_screen}/{user_input[CONF_TILE]}")
+                return self.async_create_entry(title="", data={CONF_TILES: self._tiles})
+
+            tile_options = [
+                {"value": str(i), "label": f"Position {i}"}
+                for i in free
+            ]
+            schema = vol.Schema(
                 {
-                    CONF_SCREEN: self._new_screen,
-                    CONF_TILE: int(user_input[CONF_TILE]),
-                    CONF_TYPE: self._new_type,
-                    CONF_ENTITY_ID: user_input[CONF_ENTITY_ID],
-                    CONF_LABEL: user_input.get(CONF_LABEL, ""),
-                    CONF_ICON: user_input.get(CONF_ICON, definition["icon"]),
+                    vol.Required(
+                        CONF_TILE, default=str(free[0])
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=tile_options,
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                    vol.Required(CONF_ENTITY_ID): selector.EntitySelector(
+                        selector.EntitySelectorConfig(domain=definition["domain"])
+                    ),
+                    vol.Optional(CONF_LABEL, default=""): selector.TextSelector(),
+                    vol.Optional(
+                        CONF_ICON, default=definition["icon"]
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=BUILTIN_ICONS,
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
                 }
             )
-            return self.async_create_entry(title="", data={CONF_TILES: self._tiles})
-
-        tile_options = [
-            {"value": str(i), "label": f"Position {i}"}
-            for i in free
-        ]
-        schema = vol.Schema(
-            {
-                vol.Required(
-                    CONF_TILE, default=str(free[0])
-                ): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=tile_options,
-                        mode=selector.SelectSelectorMode.DROPDOWN,
-                    )
-                ),
-                vol.Required(CONF_ENTITY_ID): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain=definition["domain"])
-                ),
-                vol.Optional(CONF_LABEL, default=""): selector.TextSelector(),
-                vol.Optional(
-                    CONF_ICON, default=definition["icon"]
-                ): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=BUILTIN_ICONS,
-                        mode=selector.SelectSelectorMode.DROPDOWN,
-                    )
-                ),
-            }
-        )
-        return self.async_show_form(
-            step_id="add_tile_details",
-            data_schema=schema,
-            description_placeholders={
-                "type": definition["label"],
-                "screen": str(self._new_screen),
-            },
-        )
+            
+            _LOGGER.debug("Showing tile details form")
+            return self.async_show_form(
+                step_id="add_tile_details",
+                data_schema=schema,
+                description_placeholders={
+                    "type": definition["label"],
+                    "screen": str(self._new_screen),
+                },
+            )
+        except Exception as err:
+            _LOGGER.error(f"Error in async_step_add_tile_details: {err}", exc_info=True)
+            return self.async_abort(reason="invalid_details")
 
     async def async_step_add_tile_actions(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Configure flexible actions for a new tile."""
-        max_positions = DEFAULT_LAYOUT["horizontal"] * DEFAULT_LAYOUT["vertical"]
-        used = {
-            t[CONF_TILE] for t in self._tiles if t[CONF_SCREEN] == self._new_screen
-        }
-        free = [i for i in range(1, max_positions + 1) if i not in used]
-        
-        if not free:
-            return self.async_abort(reason="screen_full")
-
-        if user_input is not None:
-            # ActionSelector returns a list of actions directly
-            sequence = user_input.get(CONF_ACTION_SEQUENCE, [])
-            if not isinstance(sequence, list):
-                sequence = [sequence] if sequence else []
+        try:
+            _LOGGER.debug(f"async_step_add_tile_actions called with input: {user_input}")
             
-            # Build the new tile with flexible actions
-            action_entity = user_input.get(CONF_ACTION_ENTITY, "").strip() or None
-            
-            tile_config = {
-                CONF_SCREEN: self._new_screen,
-                CONF_TILE: int(user_input[CONF_TILE]),
-                CONF_LABEL: user_input.get(CONF_LABEL, ""),
-                CONF_ICON: user_input.get(CONF_ICON, ""),
-                CONF_ACTIONS: [
-                    {
-                        CONF_ACTION_MODE: user_input.get(CONF_ACTION_MODE, "single"),
-                        CONF_ACTION_SEQUENCE: sequence,
-                    }
-                ],
+            max_positions = DEFAULT_LAYOUT["horizontal"] * DEFAULT_LAYOUT["vertical"]
+            used = {
+                t[CONF_TILE] for t in self._tiles if t[CONF_SCREEN] == self._new_screen
             }
+            free = [i for i in range(1, max_positions + 1) if i not in used]
             
-            # Optional: bind to an entity for display/feedback
-            if action_entity:
-                tile_config[CONF_ACTION_ENTITY] = action_entity
+            _LOGGER.debug(f"Screen {self._new_screen} has positions: {free}")
             
-            self._tiles.append(tile_config)
-            return self.async_create_entry(title="", data={CONF_TILES: self._tiles})
+            if not free:
+                _LOGGER.error(f"Screen {self._new_screen} is full")
+                return self.async_abort(reason="screen_full")
 
-        return self.async_show_form(
-            step_id="add_tile_actions",
-            data_schema=self._build_add_tile_actions_schema(free),
-            description_placeholders={
-                "screen": str(self._new_screen),
-            },
-        )
+            if user_input is not None:
+                _LOGGER.debug(f"Processing user input: {list(user_input.keys())}")
+                
+                # ActionSelector returns a list of actions directly
+                sequence = user_input.get(CONF_ACTION_SEQUENCE, [])
+                _LOGGER.debug(f"Sequence type: {type(sequence)}, value: {sequence}")
+                
+                if not isinstance(sequence, list):
+                    _LOGGER.warning(f"Sequence is not a list: {type(sequence)}")
+                    sequence = [sequence] if sequence else []
+                
+                # Build the new tile with flexible actions
+                action_entity = user_input.get(CONF_ACTION_ENTITY, "").strip() or None
+                action_mode = user_input.get(CONF_ACTION_MODE, "single")
+                
+                _LOGGER.debug(f"Building tile - entity: {action_entity}, mode: {action_mode}")
+                
+                tile_config = {
+                    CONF_SCREEN: self._new_screen,
+                    CONF_TILE: int(user_input[CONF_TILE]),
+                    CONF_LABEL: user_input.get(CONF_LABEL, ""),
+                    CONF_ICON: user_input.get(CONF_ICON, ""),
+                    CONF_ACTIONS: [
+                        {
+                            CONF_ACTION_MODE: action_mode,
+                            CONF_ACTION_SEQUENCE: sequence,
+                        }
+                    ],
+                }
+                
+                # Optional: bind to an entity for display/feedback
+                if action_entity:
+                    tile_config[CONF_ACTION_ENTITY] = action_entity
+                
+                _LOGGER.debug(f"Tile config built: {tile_config}")
+                self._tiles.append(tile_config)
+                
+                _LOGGER.info(f"Successfully created flexible tile at {self._new_screen}/{user_input[CONF_TILE]}")
+                return self.async_create_entry(title="", data={CONF_TILES: self._tiles})
+
+            _LOGGER.debug(f"Showing form for screen {self._new_screen}")
+            return self.async_show_form(
+                step_id="add_tile_actions",
+                data_schema=self._build_add_tile_actions_schema(free),
+                description_placeholders={
+                    "screen": str(self._new_screen),
+                },
+            )
+        except Exception as err:
+            _LOGGER.error(f"Error in async_step_add_tile_actions: {err}", exc_info=True)
+            return self.async_abort(reason="invalid_actions")
     
     def _build_add_tile_actions_schema(self, free: list[int]) -> vol.Schema:
         """Build the schema for adding tile actions with proper action builder."""
-        tile_options = [
-            {"value": str(i), "label": f"Position {i}"}
-            for i in free
-        ]
+        try:
+            _LOGGER.debug(f"Building schema for free positions: {free}")
+            
+            tile_options = [
+                {"value": str(i), "label": f"Position {i}"}
+                for i in free
+            ]
 
-        return vol.Schema(
-            {
-                vol.Required(
-                    CONF_TILE, default=str(free[0])
-                ): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=tile_options,
-                        mode=selector.SelectSelectorMode.DROPDOWN,
-                    )
-                ),
-                vol.Optional(CONF_LABEL, default=""): selector.TextSelector(
-                    selector.TextSelectorConfig(multiline=False)
-                ),
-                vol.Optional(CONF_ICON, default=""): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=BUILTIN_ICONS,
-                        mode=selector.SelectSelectorMode.DROPDOWN,
-                    )
-                ),
-                vol.Optional(CONF_ACTION_ENTITY, default=""): selector.EntitySelector(
-                    selector.EntitySelectorConfig()
-                ),
-                vol.Required(CONF_ACTION_MODE, default="single"): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=[
-                            {"value": "single", "label": "Single (one at a time)"},
-                            {"value": "parallel", "label": "Parallel (all at once)"},
-                            {"value": "queued", "label": "Queued (wait for each)"},
-                            {"value": "restart", "label": "Restart (restart if triggered again)"},
-                        ],
-                        mode=selector.SelectSelectorMode.DROPDOWN,
-                    )
-                ),
-                vol.Required(CONF_ACTION_SEQUENCE, default=[]): selector.ActionsSelector(),
-            }
-        )
+            schema = vol.Schema(
+                {
+                    vol.Required(
+                        CONF_TILE, default=str(free[0])
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=tile_options,
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                    vol.Optional(CONF_LABEL, default=""): selector.TextSelector(
+                        selector.TextSelectorConfig(multiline=False)
+                    ),
+                    vol.Optional(CONF_ICON, default=""): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=BUILTIN_ICONS,
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                    vol.Optional(CONF_ACTION_ENTITY, default=""): selector.EntitySelector(
+                        selector.EntitySelectorConfig()
+                    ),
+                    vol.Required(CONF_ACTION_MODE, default="single"): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[
+                                {"value": "single", "label": "Single (one at a time)"},
+                                {"value": "parallel", "label": "Parallel (all at once)"},
+                                {"value": "queued", "label": "Queued (wait for each)"},
+                                {"value": "restart", "label": "Restart (restart if triggered again)"},
+                            ],
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                    vol.Required(CONF_ACTION_SEQUENCE, default=[]): selector.ActionsSelector(),
+                }
+            )
+            
+            _LOGGER.debug("Schema built successfully")
+            return schema
+            
+        except Exception as err:
+            _LOGGER.error(f"Error building schema: {err}", exc_info=True)
+            raise
 
     async def async_step_remove_tile(
         self, user_input: dict[str, Any] | None = None
