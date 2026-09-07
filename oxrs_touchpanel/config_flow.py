@@ -426,7 +426,7 @@ class OxrsOptionsFlow(OptionsFlow):
                             mode=selector.SelectSelectorMode.DROPDOWN,
                         )
                     ),
-                    vol.Required(CONF_ACTION_SEQUENCE, default=[]): selector.ActionsSelector(),
+                    vol.Required(CONF_ACTION_SEQUENCE, default=[]): selector.ActionSelector(),
                 }
             )
             
