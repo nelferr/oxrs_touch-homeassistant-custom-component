@@ -76,6 +76,7 @@
       "no_tiles": "There are no tiles to remove.",
       "screen_full": "That screen has no free tile positions. Choose another screen or remove a tile first.",
       "no_actions": "Please either add at least one action, or bind to an entity for automatic control.",
+      "unsupported_entity": "This entity type is not supported for automatic action generation. Please add custom actions instead.",
       "invalid_actions": "Error creating flexible tile. Check the logs for details.",
       "invalid_format": "Error selecting tile format. Check the logs for details.",
       "invalid_type": "Error selecting tile type. Check the logs for details.",

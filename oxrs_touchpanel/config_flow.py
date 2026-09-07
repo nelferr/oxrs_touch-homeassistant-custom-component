@@ -37,7 +37,7 @@ from .const import (
     DOMAIN,
 )
 from .tiles import TILE_TYPES
-from .migrations import migrate_tile_to_actions
+from .action_generator import generate_action_sequence
 
 
 def _client_id_from_topic(topic: str) -> str | None:
@@ -360,25 +360,23 @@ class OxrsOptionsFlow(OptionsFlow):
                         },
                     )
                 
-                # If no actions but entity is bound, create a default toggle/turn_on action
+                # If no actions but entity is bound, generate smart actions
                 if not sequence and action_entity:
-                    _LOGGER.info(f"No actions defined but entity bound - using default toggle")
-                    # Determine default action based on entity domain
-                    entity_domain = action_entity.split(".")[0]
-                    if entity_domain == "light":
-                        sequence = [{"service": "light.toggle", "data": {"entity_id": action_entity}}]
-                    elif entity_domain == "switch":
-                        sequence = [{"service": "switch.toggle", "data": {"entity_id": action_entity}}]
-                    elif entity_domain == "cover":
-                        sequence = [{"service": "cover.toggle", "data": {"entity_id": action_entity}}]
-                    elif entity_domain == "climate":
-                        sequence = [{"service": "climate.set_hvac_mode", "data": {"entity_id": action_entity, "hvac_mode": "heat"}}]
-                    elif entity_domain == "scene":
-                        sequence = [{"service": "scene.turn_on", "data": {"entity_id": action_entity}}]
+                    _LOGGER.info(f"No actions defined but entity bound - auto-generating for {action_entity}")
+                    generated = generate_action_sequence(self.hass, action_entity)
+                    if generated:
+                        sequence = generated
+                        _LOGGER.debug(f"Generated {len(sequence)} actions for {action_entity}")
                     else:
-                        # Generic fallback: try toggle
-                        sequence = [{"service": f"{entity_domain}.toggle", "data": {"entity_id": action_entity}}]
-                    _LOGGER.debug(f"Generated default action for {entity_domain}: {sequence}")
+                        _LOGGER.warning(f"Could not generate actions for {action_entity}")
+                        return self.async_show_form(
+                            step_id="add_tile_actions",
+                            data_schema=self._build_add_tile_actions_schema(free),
+                            errors={"base": "unsupported_entity"},
+                            description_placeholders={
+                                "screen": str(self._new_screen),
+                            },
+                        )
                 
                 tile_config = {
                     CONF_SCREEN: self._new_screen,
