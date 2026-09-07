@@ -51,7 +51,9 @@
           "tile": "Tile position (free only)",
           "label": "Label",
           "icon": "Icon",
-          "sequence": "Action sequence (YAML)"
+          "action_entity": "Entity (optional - for display/feedback)",
+          "mode": "Script mode",
+          "sequence": "Action sequence"
         }
       },
       "add_tile_details": {
@@ -72,7 +74,12 @@
     },
     "abort": {
       "no_tiles": "There are no tiles to remove.",
-      "screen_full": "That screen has no free tile positions. Choose another screen or remove a tile first."
+      "screen_full": "That screen has no free tile positions. Choose another screen or remove a tile first.",
+      "no_actions": "Please either add at least one action, or bind to an entity for automatic control.",
+      "invalid_actions": "Error creating flexible tile. Check the logs for details.",
+      "invalid_format": "Error selecting tile format. Check the logs for details.",
+      "invalid_type": "Error selecting tile type. Check the logs for details.",
+      "invalid_details": "Error setting tile details. Check the logs for details."
     }
   }
 }
