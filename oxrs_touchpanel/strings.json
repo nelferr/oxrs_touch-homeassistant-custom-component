@@ -31,10 +31,34 @@
         }
       },
       "add_tile": {
-        "title": "Add a tile — type & screen",
+        "title": "Add a tile — choose format",
+        "description": "{help}",
         "data": {
-          "type": "Tile type",
+          "tile_format": "Tile format",
           "screen": "Screen number"
+        }
+      },
+      "add_tile_type": {
+        "title": "Add a tile — choose type (screen {screen})",
+        "data": {
+          "type": "Tile type"
+        }
+      },
+      "add_tile_actions": {
+        "title": "Add a tile — flexible actions (screen {screen})",
+        "description": "Select an entity to control with this tile.",
+        "data": {
+          "tile": "Tile position (free only)",
+          "label": "Label",
+          "icon": "Icon",
+          "action_entity": "Entity to control"
+        }
+      },
+      "select_tile_style": {
+        "title": "Choose tile style for {entity} ({domain})",
+        "description": "Select which tile style you want to use for controlling this entity.",
+        "data": {
+          "action_tile_type": "Tile style"
         }
       },
       "add_tile_details": {
@@ -55,7 +79,15 @@
     },
     "abort": {
       "no_tiles": "There are no tiles to remove.",
-      "screen_full": "That screen has no free tile positions. Choose another screen or remove a tile first."
+      "screen_full": "That screen has no free tile positions. Choose another screen or remove a tile first.",
+      "entity_required": "Please select an entity to control.",
+      "entity_not_found": "Entity not found. Make sure it exists in Home Assistant.",
+      "no_compatible_tile_types": "No tile styles are compatible with {domain} entities.",
+      "invalid_tile_style": "Please select a valid tile style.",
+      "invalid_actions": "Error creating flexible tile. Check the logs for details.",
+      "invalid_format": "Error selecting tile format. Check the logs for details.",
+      "invalid_type": "Error selecting tile type. Check the logs for details.",
+      "invalid_details": "Error setting tile details. Check the logs for details."
     }
   }
 }
