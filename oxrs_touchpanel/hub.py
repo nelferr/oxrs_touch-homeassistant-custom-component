@@ -52,13 +52,17 @@ def _find_tile_type_for_domain(domain: str, tile_types: dict[str, Any]) -> str |
     Returns:
         Matching tile type name, or None if not found
     """
+    _LOGGER.debug(f"_find_tile_type_for_domain({domain})")
     for tile_type_name, tile_def in tile_types.items():
         tile_domain = tile_def.get("domain", [])
         # Normalize domain to list for matching
         if isinstance(tile_domain, str):
             tile_domain = [tile_domain]
+        _LOGGER.debug(f"  Checking {tile_type_name}: domain={tile_domain}")
         if domain in tile_domain:
+            _LOGGER.debug(f"  ✓ Found match: {tile_type_name}")
             return tile_type_name
+    _LOGGER.warning(f"  ✗ No matching tile type for domain: {domain}")
     return None
 
 
@@ -347,12 +351,17 @@ class OxrsPanel:
             _LOGGER.debug(f"Failed to parse MQTT payload: {msg.payload}")
             return
         
+        _LOGGER.debug(f"_on_stat received: {json.dumps(payload)}")
+        
         if not isinstance(payload, dict) or "type" not in payload:
-            _LOGGER.debug(f"Invalid payload format: {payload}")
+            _LOGGER.debug(f"Invalid payload format (missing type): {payload}")
             return
         
         screen = payload.get("screen", 1)
         tile_idx = payload.get("tile", 1)
+        
+        _LOGGER.debug(f"Looking for tile: screen={screen}, tile={tile_idx}")
+        _LOGGER.debug(f"Available tiles: {[(t.get(CONF_SCREEN), t.get(CONF_TILE)) for t in self.tiles]}")
         
         try:
             tile = next(
@@ -371,19 +380,31 @@ class OxrsPanel:
             _LOGGER.debug(f"Tile not found: screen={screen}, tile={tile_idx}")
             return
         
+        _LOGGER.debug(f"Found tile: {tile}")
+        
         try:
+            # Check for flexible tile format
+            has_actions = CONF_ACTIONS in tile
+            has_entity = CONF_ACTION_ENTITY in tile
+            _LOGGER.debug(f"Tile format check - has {CONF_ACTIONS}: {has_actions}, has {CONF_ACTION_ENTITY}: {has_entity}")
+            
             # NEW: Check if tile has flexible actions (new format) with entity binding
-            if CONF_ACTIONS in tile and tile.get(CONF_ACTIONS) and CONF_ACTION_ENTITY in tile:
-                _LOGGER.debug(f"Processing flexible tile {screen}/{tile_idx}")
+            if has_actions and tile.get(CONF_ACTIONS) and has_entity:
+                _LOGGER.debug(f"Processing FLEXIBLE tile {screen}/{tile_idx}")
                 action_entity = tile[CONF_ACTION_ENTITY]
                 entity_domain = action_entity.split(".")[0]
+                
+                _LOGGER.debug(f"Flexible tile bound to entity: {action_entity} (domain: {entity_domain})")
                 
                 # Find matching tile type for this entity domain
                 matching_type = _find_tile_type_for_domain(entity_domain, TILE_TYPES)
                 
                 if not matching_type:
                     _LOGGER.warning(f"No tile type found for domain {entity_domain} (entity {action_entity})")
+                    _LOGGER.debug(f"Available tile types: {list(TILE_TYPES.keys())}")
                     return
+                
+                _LOGGER.debug(f"Matched domain {entity_domain} to tile type: {matching_type}")
                 
                 # Use the tile type's handle_event to process the MQTT payload
                 # Build a temporary tile config that the handler expects
@@ -393,18 +414,23 @@ class OxrsPanel:
                     CONF_ENTITY_ID: action_entity,
                 }
                 
+                _LOGGER.debug(f"temp_tile config: {temp_tile}")
+                
                 handler = TILE_TYPES.get(matching_type)
                 if handler is None:
                     _LOGGER.warning(f"Handler not found for tile type: {matching_type}")
                     return
                 
-                _LOGGER.debug(f"Processing flexible tile {screen}/{tile_idx} as {matching_type} bound to {action_entity}")
+                _LOGGER.info(f"Calling {matching_type} handle_event for flexible tile {screen}/{tile_idx}")
+                _LOGGER.debug(f"Payload being passed to handler: {payload}")
+                
                 self.hass.async_create_task(
                     handler["handle_event"](self.hass, temp_tile, payload)
                 )
                 return
             
             # OLD: Handle with hardcoded tile type
+            _LOGGER.debug(f"Processing HARDCODED tile {screen}/{tile_idx}")
             tile_type = tile.get(CONF_TYPE)
             if not tile_type:
                 _LOGGER.warning(f"Tile {screen}/{tile_idx} has no type or actions")
@@ -415,7 +441,7 @@ class OxrsPanel:
                 _LOGGER.warning(f"Unknown tile type: {tile_type}")
                 return
             
-            _LOGGER.debug(f"Processing {tile_type} tile {screen}/{tile_idx}")
+            _LOGGER.debug(f"Calling {tile_type} handle_event for hardcoded tile {screen}/{tile_idx}")
             self.hass.async_create_task(
                 handler["handle_event"](self.hass, tile, payload)
             )

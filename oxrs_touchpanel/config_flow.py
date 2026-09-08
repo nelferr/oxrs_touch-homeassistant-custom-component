@@ -389,10 +389,11 @@ class OxrsOptionsFlow(OptionsFlow):
                 if action_entity:
                     tile_config[CONF_ACTION_ENTITY] = action_entity
                 
-                _LOGGER.debug(f"Final flexible tile config: {tile_config}")
+                _LOGGER.info(f"Creating flexible tile config: {tile_config}")
                 self._tiles.append(tile_config)
                 
                 _LOGGER.info(f"Successfully created flexible tile at {self._new_screen}/{user_input[CONF_TILE]}")
+                _LOGGER.debug(f"All tiles after creation: {self._tiles}")
                 return self.async_create_entry(title="", data={CONF_TILES: self._tiles})
 
             _LOGGER.debug(f"Showing form for screen {self._new_screen}")

@@ -59,30 +59,37 @@ def get_best_tile_type_for_entity(hass: HomeAssistant, entity_id: str) -> str | 
         _LOGGER.warning(f"Entity {entity_id} not found in state")
         return None
     
+    _LOGGER.debug(f"get_best_tile_type_for_entity({entity_id}), domain={domain}")
+    
     # Special handling for lights - check attributes
     if domain == "light":
         # Color temp support → use CCT tile
         if "color_temp_kelvin" in state.attributes or "color_temp" in state.attributes:
+            _LOGGER.debug(f"  → light has color_temp, returning 'cct'")
             return "cct"
         # Brightness support → use slider
         elif "brightness" in state.attributes:
+            _LOGGER.debug(f"  → light has brightness, returning 'slider'")
             return "slider"
         # On/off only → use button
         else:
+            _LOGGER.debug(f"  → light has no brightness/color_temp, returning 'button'")
             return "button"
     
     # Special handling for media_player - check for source list
     elif domain == "media_player":
         source_list = state.attributes.get("source_list")
         if source_list:
+            _LOGGER.debug(f"  → media_player has source_list, returning 'select'")
             return "select"  # Has source selector
         else:
+            _LOGGER.debug(f"  → media_player has no source_list, returning 'volume'")
             return "volume"  # Volume control only
     
     # Default mapping for other domains
     tile_type = DOMAIN_TO_TILE_TYPE.get(domain)
     if tile_type:
-        _LOGGER.debug(f"Mapped {entity_id} ({domain}) → {tile_type}")
+        _LOGGER.debug(f"  → {domain} mapped to {tile_type}")
         return tile_type
     
     _LOGGER.warning(f"No tile type mapping for domain: {domain}")
