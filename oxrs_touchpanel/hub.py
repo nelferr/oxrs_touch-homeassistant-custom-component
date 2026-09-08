@@ -16,6 +16,7 @@ from homeassistant.helpers.event import async_track_state_change_event
 
 from .const import (
     CONF_ACTION_ENTITY,
+    CONF_ACTION_TILE_TYPE,
     CONF_ACTIONS,
     CONF_ENTITY_ID,
     CONF_ICON,
@@ -179,25 +180,26 @@ class OxrsPanel:
             for t in sorted(screen_tiles, key=lambda x: x[CONF_TILE]):
                 # Support both old and new tile formats
                 if CONF_ACTIONS in t and t.get(CONF_ACTIONS):
-                    # New format: flexible actions
-                    # Check if there's an optional entity for display
-                    action_entity = t.get(CONF_ACTION_ENTITY)
+                    # New format: flexible actions with optional entity binding
+                    # Use the stored tile type if user chose one
+                    matching_type = t.get(CONF_ACTION_TILE_TYPE)
                     
-                    if action_entity:
-                        # Use the entity's tile type for UI rendering
+                    # Fallback to detecting from entity if not stored (backward compat)
+                    if not matching_type and CONF_ACTION_ENTITY in t:
+                        action_entity = t.get(CONF_ACTION_ENTITY)
                         entity_domain = action_entity.split(".")[0]
                         matching_type = _find_tile_type_for_domain(entity_domain, TILE_TYPES)
-                        
-                        if matching_type:
-                            definition = TILE_TYPES[matching_type]
-                            tile_conf: dict[str, Any] = {
-                                "tile": t[CONF_TILE],
-                                "style": definition["style"],
-                                "label": t.get(CONF_LABEL) or "",
-                                "icon": t.get(CONF_ICON) or definition["icon"],
-                            }
-                            config_extra = definition.get("config_extra")
-                            if config_extra is not None:
+                    
+                    if matching_type:
+                        definition = TILE_TYPES[matching_type]
+                        tile_conf: dict[str, Any] = {
+                            "tile": t[CONF_TILE],
+                            "style": definition["style"],
+                            "label": t.get(CONF_LABEL) or "",
+                            "icon": t.get(CONF_ICON) or definition["icon"],
+                        }
+                        config_extra = definition.get("config_extra")
+                        if config_extra is not None:
                                 # Pass the entity in tile config for config_extra to use
                                 tile_conf.update(config_extra(self.hass, {**t, CONF_ENTITY_ID: action_entity}))
                         else:
@@ -260,9 +262,11 @@ class OxrsPanel:
             if CONF_ACTIONS in tile and tile.get(CONF_ACTIONS):
                 action_entity = tile.get(CONF_ACTION_ENTITY)
                 if action_entity:
-                    # Has an entity - use its tile type handler for state
-                    entity_domain = action_entity.split(".")[0]
-                    matching_type = _find_tile_type_for_domain(entity_domain, TILE_TYPES)
+                    # Use stored tile type if available, otherwise detect from entity
+                    matching_type = tile.get(CONF_ACTION_TILE_TYPE)
+                    if not matching_type:
+                        entity_domain = action_entity.split(".")[0]
+                        matching_type = _find_tile_type_for_domain(entity_domain, TILE_TYPES)
                     
                     if matching_type:
                         handler = TILE_TYPES.get(matching_type)
@@ -311,12 +315,14 @@ class OxrsPanel:
         # NEW format: flexible tiles with CONF_ACTION_ENTITY
         flexible_tiles = [
             t for t in self.tiles
-            if CONF_ACTIONS in t and t.get(CONF_ACTION_ENTITY) == entity_id
+            if CONF_ACTIONS in t and t.get(CONF_ACTIONS) and t.get(CONF_ACTION_ENTITY) == entity_id
         ]
         for flexible_tile in flexible_tiles:
-            # Determine the tile type from entity domain
-            entity_domain = entity_id.split(".")[0]
-            matching_type = _find_tile_type_for_domain(entity_domain, TILE_TYPES)
+            # Use stored tile type if available, otherwise detect from entity
+            matching_type = flexible_tile.get(CONF_ACTION_TILE_TYPE)
+            if not matching_type:
+                entity_domain = entity_id.split(".")[0]
+                matching_type = _find_tile_type_for_domain(entity_domain, TILE_TYPES)
             
             if matching_type:
                 tiles_to_update.append((flexible_tile, matching_type))
@@ -394,10 +400,12 @@ class OxrsPanel:
                 action_entity = tile[CONF_ACTION_ENTITY]
                 entity_domain = action_entity.split(".")[0]
                 
-                _LOGGER.debug(f"Flexible tile bound to entity: {action_entity} (domain: {entity_domain})")
+                # Use stored tile type if available, otherwise detect from entity
+                matching_type = tile.get(CONF_ACTION_TILE_TYPE)
+                if not matching_type:
+                    matching_type = _find_tile_type_for_domain(entity_domain, TILE_TYPES)
                 
-                # Find matching tile type for this entity domain
-                matching_type = _find_tile_type_for_domain(entity_domain, TILE_TYPES)
+                _LOGGER.debug(f"Flexible tile bound to entity: {action_entity} → tile type: {matching_type}")
                 
                 if not matching_type:
                     _LOGGER.warning(f"No tile type found for domain {entity_domain} (entity {action_entity})")

@@ -42,6 +42,79 @@ DOMAIN_TO_TILE_TYPE: dict[str, str] = {
 }
 
 
+def get_all_tile_types_for_entity(hass: HomeAssistant, entity_id: str) -> list[str]:
+    """Get ALL possible OXRS tile types for a given entity.
+    
+    Unlike get_best_tile_type_for_entity which returns ONE best option,
+    this returns ALL valid options so user can choose. For example:
+      light with color_temp → ["cct", "slider", "button"]
+      light without color_temp → ["slider", "button"]
+      cover → ["updown"]
+      media_player with sources → ["select", "volume"]
+      
+    Args:
+        hass: Home Assistant instance
+        entity_id: Full entity ID
+        
+    Returns:
+        List of possible tile type names (ordered by preference)
+    """
+    domain = entity_id.split(".")[0]
+    state = hass.states.get(entity_id)
+    
+    if state is None:
+        _LOGGER.warning(f"Entity {entity_id} not found in state")
+        return []
+    
+    _LOGGER.debug(f"get_all_tile_types_for_entity({entity_id}), domain={domain}")
+    options = []
+    
+    if domain == "light":
+        # All lights can be controlled as button (on/off only)
+        options.append("button")
+        
+        # Brightness support → can use slider
+        if "brightness" in state.attributes:
+            options.insert(0, "slider")  # Prefer slider over button
+        
+        # Color temp support → can use CCT (best option)
+        if "color_temp_kelvin" in state.attributes or "color_temp" in state.attributes:
+            options.insert(0, "cct")  # Prefer CCT over slider over button
+        
+        _LOGGER.debug(f"  → light options: {options}")
+        return options
+    
+    elif domain == "cover":
+        _LOGGER.debug(f"  → cover options: ['updown']")
+        return ["updown"]
+    
+    elif domain == "climate":
+        _LOGGER.debug(f"  → climate options: ['thermostat']")
+        return ["thermostat"]
+    
+    elif domain == "media_player":
+        options = []
+        # Check if has source list
+        source_list = state.attributes.get("source_list")
+        if source_list:
+            options.append("select")  # Source selector
+        # Volume control usually available
+        options.append("volume")
+        _LOGGER.debug(f"  → media_player options: {options}")
+        return options
+    
+    elif domain in ("switch", "script", "scene", "button", "input_button"):
+        _LOGGER.debug(f"  → {domain} options: ['button']")
+        return ["button"]
+    
+    elif domain in ("select", "input_select"):
+        _LOGGER.debug(f"  → {domain} options: ['select']")
+        return ["select"]
+    
+    _LOGGER.warning(f"No tile type options for domain: {domain}")
+    return []
+
+
 def get_best_tile_type_for_entity(hass: HomeAssistant, entity_id: str) -> str | None:
     """Determine the best OXRS tile type for a given entity.
     

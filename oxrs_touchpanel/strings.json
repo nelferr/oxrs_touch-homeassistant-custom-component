@@ -56,6 +56,13 @@
           "sequence": "Action sequence"
         }
       },
+      "add_tile_style": {
+        "title": "Choose tile style for {entity}",
+        "description": "Select which control style you want for this entity.",
+        "data": {
+          "tile_style": "Tile style"
+        }
+      },
       "add_tile_details": {
         "title": "Add a tile — {type} (screen {screen})",
         "data": {
