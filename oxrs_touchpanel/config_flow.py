@@ -469,13 +469,13 @@ class OxrsOptionsFlow(OptionsFlow):
     def _format_tile_type_name(tile_type: str) -> str:
         """Format tile type name for display."""
         names = {
-            "cct": "Color & Brightness",
-            "slider": "Brightness Only",
-            "updown": "Open/Close/Stop",
-            "thermostat": "Thermostat",
-            "button": "On/Off Toggle",
-            "volume": "Volume Control",
-            "select": "Selector",
+            "cct": "colorPickerCct (Color Temp + Brightness)",
+            "slider": "buttonSlider (Brightness)",
+            "updown": "buttonUpDown (Open/Close/Stop)",
+            "thermostat": "thermostat",
+            "button": "button (Toggle)",
+            "volume": "volume (Up/Down)",
+            "select": "menu (Dropdown)",
         }
         return names.get(tile_type, tile_type)
     
