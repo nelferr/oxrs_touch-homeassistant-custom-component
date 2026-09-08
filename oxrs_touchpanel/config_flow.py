@@ -37,7 +37,7 @@ from .const import (
     DOMAIN,
 )
 from .tiles import TILE_TYPES
-from .action_generator import generate_action_sequence
+from .domain_mapper import get_best_tile_type_for_entity
 
 
 def _client_id_from_topic(topic: str) -> str | None:
@@ -338,37 +338,29 @@ class OxrsOptionsFlow(OptionsFlow):
                 sequence = user_input.get(CONF_ACTION_SEQUENCE, [])
                 _LOGGER.debug(f"Sequence type: {type(sequence)}, value: {sequence}")
                 
-                if not isinstance(sequence, list):
-                    _LOGGER.warning(f"Sequence is not a list: {type(sequence)}")
-                    sequence = [sequence] if sequence else []
-                
-                # Build the new tile with flexible actions
+                # Build the new flexible tile
                 action_entity = user_input.get(CONF_ACTION_ENTITY, "").strip() or None
-                action_mode = user_input.get(CONF_ACTION_MODE, "single")
                 
-                _LOGGER.debug(f"Building tile - entity: {action_entity}, mode: {action_mode}, actions: {len(sequence)}")
+                _LOGGER.debug(f"Building flexible tile - entity: {action_entity}")
                 
-                # Validate: must have either actions OR an entity to control
-                if not sequence and not action_entity:
-                    _LOGGER.warning("User submitted without actions and without entity binding")
-                    return self.async_show_form(
-                        step_id="add_tile_actions",
-                        data_schema=self._build_add_tile_actions_schema(free),
-                        errors={"base": "no_actions"},
-                        description_placeholders={
-                            "screen": str(self._new_screen),
-                        },
-                    )
-                
-                # If no actions but entity is bound, generate smart actions
-                if not sequence and action_entity:
-                    _LOGGER.info(f"No actions defined but entity bound - auto-generating for {action_entity}")
-                    generated = generate_action_sequence(self.hass, action_entity)
-                    if generated:
-                        sequence = generated
-                        _LOGGER.debug(f"Generated {len(sequence)} actions for {action_entity}")
-                    else:
-                        _LOGGER.warning(f"Could not generate actions for {action_entity}")
+                # Verify entity exists
+                if action_entity:
+                    entity_state = self.hass.states.get(action_entity)
+                    if entity_state is None:
+                        _LOGGER.warning(f"Entity not found: {action_entity}")
+                        return self.async_show_form(
+                            step_id="add_tile_actions",
+                            data_schema=self._build_add_tile_actions_schema(free),
+                            errors={"base": "entity_not_found"},
+                            description_placeholders={
+                                "screen": str(self._new_screen),
+                            },
+                        )
+                    
+                    # Determine tile type from entity
+                    tile_type = get_best_tile_type_for_entity(self.hass, action_entity)
+                    if tile_type is None:
+                        _LOGGER.warning(f"Unsupported entity domain for {action_entity}")
                         return self.async_show_form(
                             step_id="add_tile_actions",
                             data_schema=self._build_add_tile_actions_schema(free),
@@ -377,25 +369,27 @@ class OxrsOptionsFlow(OptionsFlow):
                                 "screen": str(self._new_screen),
                             },
                         )
+                    
+                    _LOGGER.info(f"Entity {action_entity} → tile type {tile_type}")
+                else:
+                    _LOGGER.warning("Flexible tile created without entity binding")
                 
+                # Build the tile config - MINIMAL approach
+                # Just store the entity binding; handlers will do the rest
                 tile_config = {
                     CONF_SCREEN: self._new_screen,
                     CONF_TILE: int(user_input[CONF_TILE]),
                     CONF_LABEL: user_input.get(CONF_LABEL, ""),
                     CONF_ICON: user_input.get(CONF_ICON, ""),
-                    CONF_ACTIONS: [
-                        {
-                            CONF_ACTION_MODE: action_mode,
-                            CONF_ACTION_SEQUENCE: sequence,
-                        }
-                    ],
+                    # Mark this as a flexible tile (for now, just empty actions array)
+                    CONF_ACTIONS: [{}],  # Presence of CONF_ACTIONS marks it as flexible
                 }
                 
-                # Optional: bind to an entity for display/feedback
+                # Bind to entity if provided
                 if action_entity:
                     tile_config[CONF_ACTION_ENTITY] = action_entity
                 
-                _LOGGER.debug(f"Final tile config: {tile_config}")
+                _LOGGER.debug(f"Final flexible tile config: {tile_config}")
                 self._tiles.append(tile_config)
                 
                 _LOGGER.info(f"Successfully created flexible tile at {self._new_screen}/{user_input[CONF_TILE]}")

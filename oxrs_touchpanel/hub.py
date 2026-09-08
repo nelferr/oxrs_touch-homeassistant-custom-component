@@ -42,6 +42,26 @@ from .tiles import TILE_TYPES
 _LOGGER = logging.getLogger(__name__)
 
 
+def _find_tile_type_for_domain(domain: str, tile_types: dict[str, Any]) -> str | None:
+    """Find best matching tile type for an entity domain.
+    
+    Args:
+        domain: Entity domain (e.g., "light", "cover")
+        tile_types: TILE_TYPES dictionary
+        
+    Returns:
+        Matching tile type name, or None if not found
+    """
+    for tile_type_name, tile_def in tile_types.items():
+        tile_domain = tile_def.get("domain", [])
+        # Normalize domain to list for matching
+        if isinstance(tile_domain, str):
+            tile_domain = [tile_domain]
+        if domain in tile_domain:
+            return tile_type_name
+    return None
+
+
 class OxrsPanel:
     """Represents a single OXRS Touch Panel (one MQTT client id)."""
 
@@ -162,12 +182,7 @@ class OxrsPanel:
                     if action_entity:
                         # Use the entity's tile type for UI rendering
                         entity_domain = action_entity.split(".")[0]
-                        # Find a hardcoded tile type that matches this domain
-                        matching_type = None
-                        for tile_type_name, tile_def in TILE_TYPES.items():
-                            if entity_domain in tile_def.get("domain", []):
-                                matching_type = tile_type_name
-                                break
+                        matching_type = _find_tile_type_for_domain(entity_domain, TILE_TYPES)
                         
                         if matching_type:
                             definition = TILE_TYPES[matching_type]
@@ -243,11 +258,7 @@ class OxrsPanel:
                 if action_entity:
                     # Has an entity - use its tile type handler for state
                     entity_domain = action_entity.split(".")[0]
-                    matching_type = None
-                    for tile_type_name, tile_def in TILE_TYPES.items():
-                        if entity_domain in tile_def.get("domain", []):
-                            matching_type = tile_type_name
-                            break
+                    matching_type = _find_tile_type_for_domain(entity_domain, TILE_TYPES)
                     
                     if matching_type:
                         handler = TILE_TYPES.get(matching_type)
@@ -277,27 +288,55 @@ class OxrsPanel:
 
     @callback
     def _on_entity_change(self, event: Event) -> None:
+        """Send updated state to panel when entity changes."""
         new_state = event.data.get("new_state")
         if new_state is None or new_state.state in ("unavailable", "unknown"):
             return
         entity_id = event.data["entity_id"]
-        tile = next(
-            (t for t in self.tiles if t.get(CONF_ENTITY_ID) == entity_id), None
+        
+        # Find tiles affected by this entity change
+        tiles_to_update = []
+        
+        # OLD format: tiles with CONF_ENTITY_ID + CONF_TYPE
+        old_format_tile = next(
+            (t for t in self.tiles if t.get(CONF_ENTITY_ID) == entity_id and CONF_TYPE in t), None
         )
-        if tile is None:
-            return
-        handler = TILE_TYPES.get(tile[CONF_TYPE])
-        if handler is None:
-            return
-        state = handler["build_state"](self.hass, tile)
-        if state is not None:
-            self.hass.async_create_task(
-                mqtt.async_publish(
-                    self.hass,
-                    topic_cmnd(self.client_id),
-                    json.dumps({"tiles": [state]}),
+        if old_format_tile:
+            tiles_to_update.append((old_format_tile, old_format_tile[CONF_TYPE]))
+        
+        # NEW format: flexible tiles with CONF_ACTION_ENTITY
+        flexible_tiles = [
+            t for t in self.tiles
+            if CONF_ACTIONS in t and t.get(CONF_ACTION_ENTITY) == entity_id
+        ]
+        for flexible_tile in flexible_tiles:
+            # Determine the tile type from entity domain
+            entity_domain = entity_id.split(".")[0]
+            matching_type = _find_tile_type_for_domain(entity_domain, TILE_TYPES)
+            
+            if matching_type:
+                tiles_to_update.append((flexible_tile, matching_type))
+        
+        # Send cmnd/ updates for all affected tiles
+        for tile, tile_type in tiles_to_update:
+            handler = TILE_TYPES.get(tile_type)
+            if handler is None:
+                continue
+            
+            # For flexible tiles, we need to pass entity_id as CONF_ENTITY_ID for build_state
+            temp_tile = tile
+            if CONF_ACTION_ENTITY in tile and CONF_ENTITY_ID not in tile:
+                temp_tile = {**tile, CONF_ENTITY_ID: entity_id}
+            
+            state = handler["build_state"](self.hass, temp_tile)
+            if state is not None:
+                self.hass.async_create_task(
+                    mqtt.async_publish(
+                        self.hass,
+                        topic_cmnd(self.client_id),
+                        json.dumps({"tiles": [state]}),
+                    )
                 )
-            )
 
     # ── inbound: panel -> HA ─────────────────────────────────────────────────
     @callback
@@ -333,51 +372,36 @@ class OxrsPanel:
             return
         
         try:
-            # NEW: Check if tile has flexible actions (new format)
-            if CONF_ACTIONS in tile and tile.get(CONF_ACTIONS):
-                _LOGGER.debug(f"Processing flexible actions for tile {screen}/{tile_idx}")
-                try:
-                    # Check if this flexible tile has an entity for parameter passing
-                    action_entity = tile.get(CONF_ACTION_ENTITY)
-                    extra_data = {}
-                    
-                    if action_entity:
-                        # Determine the tile type from entity domain
-                        entity_domain = action_entity.split(".")[0]
-                        matching_type = None
-                        for tile_type_name, tile_def in TILE_TYPES.items():
-                            if entity_domain in tile_def.get("domain", []):
-                                matching_type = tile_type_name
-                                break
-                        
-                        if matching_type:
-                            # Use that tile type's handle_event to extract parameters
-                            # But we don't actually handle the event, just extract the data
-                            handler = TILE_TYPES.get(matching_type)
-                            if handler and "handle_event" in handler:
-                                # The handle_event function expects this data format
-                                # We can extract the same parameters it would extract
-                                _LOGGER.debug(f"Flexible tile {screen}/{tile_idx} bound to entity {action_entity}")
-                    
-                    oxrs_tile = OxrsTile(self.hass, tile)
-                    for idx, action in enumerate(oxrs_tile.actions):
-                        _LOGGER.debug(f"Running action {idx} for tile {screen}/{tile_idx}")
-                        # Pass MQTT payload + entity data to the action
-                        self.hass.async_create_task(
-                            action.run(
-                                data={
-                                    "payload": payload,
-                                    "tile_id": f"{screen}_{tile_idx}",
-                                    "entity_id": action_entity,
-                                    **extra_data,
-                                }
-                            )
-                        )
-                except Exception as err:
-                    _LOGGER.error(
-                        f"Error processing flexible actions for {screen}/{tile_idx}: {err}",
-                        exc_info=True,
-                    )
+            # NEW: Check if tile has flexible actions (new format) with entity binding
+            if CONF_ACTIONS in tile and tile.get(CONF_ACTIONS) and CONF_ACTION_ENTITY in tile:
+                _LOGGER.debug(f"Processing flexible tile {screen}/{tile_idx}")
+                action_entity = tile[CONF_ACTION_ENTITY]
+                entity_domain = action_entity.split(".")[0]
+                
+                # Find matching tile type for this entity domain
+                matching_type = _find_tile_type_for_domain(entity_domain, TILE_TYPES)
+                
+                if not matching_type:
+                    _LOGGER.warning(f"No tile type found for domain {entity_domain} (entity {action_entity})")
+                    return
+                
+                # Use the tile type's handle_event to process the MQTT payload
+                # Build a temporary tile config that the handler expects
+                temp_tile = {
+                    **tile,
+                    CONF_TYPE: matching_type,
+                    CONF_ENTITY_ID: action_entity,
+                }
+                
+                handler = TILE_TYPES.get(matching_type)
+                if handler is None:
+                    _LOGGER.warning(f"Handler not found for tile type: {matching_type}")
+                    return
+                
+                _LOGGER.debug(f"Processing flexible tile {screen}/{tile_idx} as {matching_type} bound to {action_entity}")
+                self.hass.async_create_task(
+                    handler["handle_event"](self.hass, temp_tile, payload)
+                )
                 return
             
             # OLD: Handle with hardcoded tile type
