@@ -20,11 +20,6 @@ _LOGGER = logging.getLogger(__name__)
 
 from .const import (
     BUILTIN_ICONS,
-    CONF_ACTION_ENTITY,
-    CONF_ACTION_MODE,
-    CONF_ACTION_SEQUENCE,
-    CONF_ACTION_TILE_TYPE,
-    CONF_ACTIONS,
     CONF_CLIENT_ID,
     CONF_ENTITY_ID,
     CONF_ICON,
@@ -38,7 +33,6 @@ from .const import (
     DOMAIN,
 )
 from .tiles import TILE_TYPES
-from .domain_mapper import get_compatible_tile_types
 
 
 def _client_id_from_topic(topic: str) -> str | None:
@@ -131,11 +125,7 @@ class OxrsOptionsFlow(OptionsFlow):
         )
         self._new_type: str | None = None
         self._new_screen: int = 1
-        self._use_flexible_actions: bool = False
-        self._action_sequence: list[dict[str, Any]] | None = None
-        self._pending_tile: dict[str, Any] = {}  # Temporary storage for multi-step tile creation
-        self._pending_tile_types: list[str] = []  # Available tile types for pending entity
-
+        
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -147,46 +137,31 @@ class OxrsOptionsFlow(OptionsFlow):
     async def async_step_add_tile(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Step 1: choose tile format and target screen."""
+        """Step 1: Choose target screen, then tile type."""
         try:
             _LOGGER.debug(f"async_step_add_tile called with input: {user_input}")
             
             if user_input is not None:
-                self._use_flexible_actions = user_input.get("tile_format") == "flexible"
                 self._new_screen = int(user_input[CONF_SCREEN])
+                _LOGGER.debug(f"User chose screen: {self._new_screen}")
                 
-                _LOGGER.debug(f"User chose format: {'flexible' if self._use_flexible_actions else 'hardcoded'}, screen: {self._new_screen}")
-                
-                if self._use_flexible_actions:
-                    # New format: go to flexible actions configuration
-                    return await self.async_step_add_tile_actions()
-                else:
-                    # Old format: choose tile type
-                    return await self.async_step_add_tile_type()
+                # Go to tile type selection
+                return await self.async_step_add_tile_type()
 
             schema = vol.Schema(
                 {
-                    vol.Required("tile_format", default="hardcoded"): selector.SelectSelector(
-                        selector.SelectSelectorConfig(
-                            options=[
-                                {"value": "hardcoded", "label": "Hardcoded tile type (light, switch, climate, etc.)"},
-                                {"value": "flexible", "label": "Flexible actions (advanced: service sequences, templates, etc.)"},
-                            ],
-                            mode=selector.SelectSelectorMode.DROPDOWN,
-                        )
-                    ),
                     vol.Required(CONF_SCREEN, default=1): selector.NumberSelector(
                         selector.NumberSelectorConfig(min=1, max=32, mode="box")
                     ),
                 }
             )
             
-            _LOGGER.debug("Showing initial tile format selection form")
+            _LOGGER.debug("Showing screen selection form")
             return self.async_show_form(
                 step_id="add_tile",
                 data_schema=schema,
                 description_placeholders={
-                    "help": "Choose 'Hardcoded' for simple entity control, or 'Flexible' for multi-step automations."
+                    "help": "Choose which screen to add the tile to."
                 },
             )
         except Exception as err:
@@ -315,164 +290,6 @@ class OxrsOptionsFlow(OptionsFlow):
             _LOGGER.error(f"Error in async_step_add_tile_details: {err}", exc_info=True)
             return self.async_abort(reason="invalid_details")
 
-    async def async_step_add_tile_actions(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Configure flexible actions for a new tile."""
-        try:
-            _LOGGER.debug(f"async_step_add_tile_actions called with input: {user_input}")
-            
-            max_positions = DEFAULT_LAYOUT["horizontal"] * DEFAULT_LAYOUT["vertical"]
-            used = {
-                t[CONF_TILE] for t in self._tiles if t[CONF_SCREEN] == self._new_screen
-            }
-            free = [i for i in range(1, max_positions + 1) if i not in used]
-            
-            _LOGGER.debug(f"Screen {self._new_screen} has positions: {free}")
-            
-            if not free:
-                _LOGGER.error(f"Screen {self._new_screen} is full")
-                return self.async_abort(reason="screen_full")
-
-            if user_input is not None:
-                _LOGGER.debug(f"Processing user input: {list(user_input.keys())}")
-                
-                # Build minimal tile config with entity binding
-                action_entity = user_input.get(CONF_ACTION_ENTITY, "").strip() or None
-                
-                _LOGGER.debug(f"Building flexible tile - entity: {action_entity}")
-                
-                # Verify entity exists
-                if not action_entity:
-                    return self.async_show_form(
-                        step_id="add_tile_actions",
-                        data_schema=self._build_add_tile_actions_schema(free),
-                        errors={"base": "entity_required"},
-                        description_placeholders={
-                            "screen": str(self._new_screen),
-                        },
-                    )
-                
-                entity_state = self.hass.states.get(action_entity)
-                if entity_state is None:
-                    _LOGGER.warning(f"Entity not found: {action_entity}")
-                    return self.async_show_form(
-                        step_id="add_tile_actions",
-                        data_schema=self._build_add_tile_actions_schema(free),
-                        errors={"base": "entity_not_found"},
-                        description_placeholders={
-                            "screen": str(self._new_screen),
-                        },
-                    )
-                
-                # Get entity domain
-                entity_domain = action_entity.split(".")[0]
-                
-                # Find compatible tile types for this domain (pass state for smart detection)
-                compatible = get_compatible_tile_types(TILE_TYPES, entity_domain, entity_state)
-                
-                if not compatible:
-                    _LOGGER.warning(f"No compatible tile types for domain: {entity_domain}")
-                    return self.async_show_form(
-                        step_id="add_tile_actions",
-                        data_schema=self._build_add_tile_actions_schema(free),
-                        errors={"base": "no_compatible_tile_types"},
-                        description_placeholders={
-                            "screen": str(self._new_screen),
-                            "domain": entity_domain,
-                        },
-                    )
-                
-                # Store tile details and compatible types for next step
-                self._pending_tile = {
-                    CONF_SCREEN: self._new_screen,
-                    CONF_TILE: int(user_input[CONF_TILE]),
-                    CONF_LABEL: user_input.get(CONF_LABEL, ""),
-                    CONF_ICON: user_input.get(CONF_ICON, ""),
-                    CONF_ACTION_ENTITY: action_entity,
-                    CONF_ACTIONS: [{}],  # Mark as flexible
-                }
-                
-                # Store compatible tile types for the style selection step
-                self._pending_tile_types = compatible
-                
-                _LOGGER.info(f"Entity {action_entity} ({entity_domain}) has {len(compatible)} compatible tile types")
-                _LOGGER.debug(f"Compatible types: {[name for name, _ in compatible]}")
-                
-                # Go to tile style selection
-                return await self.async_step_select_tile_style()
-
-            _LOGGER.debug(f"Showing form for screen {self._new_screen}")
-            return self.async_show_form(
-                step_id="add_tile_actions",
-                data_schema=self._build_add_tile_actions_schema(free),
-                description_placeholders={
-                    "screen": str(self._new_screen),
-                },
-            )
-        except Exception as err:
-            _LOGGER.error(f"Error in async_step_add_tile_actions: {err}", exc_info=True)
-            return self.async_abort(reason="invalid_actions")
-
-    async def async_step_select_tile_style(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """User selects which tile style for the entity."""
-        try:
-            if user_input is not None:
-                _LOGGER.debug(f"async_step_select_tile_style user chose: {user_input}")
-                
-                chosen_type = user_input.get(CONF_ACTION_TILE_TYPE)
-                
-                if not chosen_type:
-                    return self.async_abort(reason="invalid_tile_style")
-                
-                _LOGGER.info(f"User selected tile style: {chosen_type} for entity {self._pending_tile.get(CONF_ACTION_ENTITY)}")
-                
-                # Add chosen type to pending tile and create entry
-                self._pending_tile[CONF_ACTION_TILE_TYPE] = chosen_type
-                self._tiles.append(self._pending_tile)
-                
-                _LOGGER.info(f"Created flexible tile: {self._pending_tile}")
-                return self.async_create_entry(title="", data={CONF_TILES: self._tiles})
-            
-            # Show form with compatible tile types only
-            if not hasattr(self, "_pending_tile_types") or not self._pending_tile_types:
-                _LOGGER.error("No compatible tile types available")
-                return self.async_abort(reason="no_compatible_tile_types")
-            
-            entity = self._pending_tile.get(CONF_ACTION_ENTITY, "")
-            entity_domain = entity.split(".")[0]
-            
-            # Create dropdown options from compatible tile types
-            options = [
-                {"value": tile_type, "label": f"{tile_type} ({tile_def.get('label', '')})" }
-                for tile_type, tile_def in self._pending_tile_types
-            ]
-            
-            _LOGGER.debug(f"Showing {len(options)} compatible tile types for {entity_domain}")
-            
-            schema = vol.Schema({
-                vol.Required(CONF_ACTION_TILE_TYPE): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=options,
-                        mode="dropdown",
-                    )
-                )
-            })
-            
-            return self.async_show_form(
-                step_id="select_tile_style",
-                data_schema=schema,
-                description_placeholders={
-                    "entity": entity,
-                    "domain": entity_domain,
-                },
-            )
-        except Exception as err:
-            _LOGGER.error(f"Error in async_step_select_tile_style: {err}", exc_info=True)
-            return self.async_abort(reason="invalid_actions")
-    
     def _build_add_tile_actions_schema(self, free: list[int]) -> vol.Schema:
         """Build the schema for adding tile actions with proper action builder."""
         try:
