@@ -368,8 +368,8 @@ class OxrsOptionsFlow(OptionsFlow):
                 # Get entity domain
                 entity_domain = action_entity.split(".")[0]
                 
-                # Find compatible tile types for this domain
-                compatible = get_compatible_tile_types(TILE_TYPES, entity_domain)
+                # Find compatible tile types for this domain (pass state for smart detection)
+                compatible = get_compatible_tile_types(TILE_TYPES, entity_domain, entity_state)
                 
                 if not compatible:
                     _LOGGER.warning(f"No compatible tile types for domain: {entity_domain}")

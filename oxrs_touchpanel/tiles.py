@@ -84,7 +84,76 @@ async def _cct_handle_event(
         await hass.services.async_call("light", "turn_on", data, blocking=False)
 
 
-# ─── buttonSlider → light (brightness as a 0-100 level) ──────────────────────
+# ─── colorPickerRgbCct → light (RGBW: RGB color + white channel + brightness) ────
+def _rgbw_build_state(hass: HomeAssistant, tile: dict[str, Any]) -> dict[str, Any] | None:
+    """Build OXRS RGBW tile state from HA light entity."""
+    entity_id = tile[CONF_ENTITY_ID]
+    state = hass.states.get(entity_id)
+    is_on = state is not None and state.state == "on"
+    brightness = 0
+    r, g, b, w = 255, 255, 255, 0
+    
+    if state is not None:
+        brightness = state.attributes.get("brightness") or 0
+        # Get RGBW color - stored as rgbw_color tuple (r, g, b, w)
+        rgbw_color = state.attributes.get("rgbw_color")
+        if rgbw_color and len(rgbw_color) >= 4:
+            r, g, b, w = rgbw_color[0], rgbw_color[1], rgbw_color[2], rgbw_color[3]
+        else:
+            # Fallback to values attribute if rgbw_color not set
+            values = state.attributes.get("values")
+            if values and len(values) >= 4:
+                r, g, b, w = values[0], values[1], values[2], values[3]
+    
+    return {
+        "screen": tile[CONF_SCREEN],
+        "tile": tile[CONF_TILE],
+        "state": "on" if is_on else "off",
+        "colorPicker": {
+            "rgbw": {
+                "r": int(r),
+                "g": int(g),
+                "b": int(b),
+                "w": int(w),
+            },
+            "brightness": round(int(brightness) / 255 * 100),
+        },
+    }
+
+
+async def _rgbw_handle_event(
+    hass: HomeAssistant, tile: dict[str, Any], payload: dict[str, Any]
+) -> None:
+    """Process OXRS RGBW tile event and apply to HA light entity."""
+    entity_id = tile[CONF_ENTITY_ID]
+    ptype = payload.get("type")
+    
+    # Button press: toggle
+    if ptype == "button" and payload.get("event") == "single":
+        await hass.services.async_call(
+            "light", "toggle", {"entity_id": entity_id}, blocking=False
+        )
+        return
+    
+    # Color picker: RGBW + brightness change
+    if ptype == "colorPicker":
+        picker_state = payload.get("state") or {}
+        data: dict[str, Any] = {"entity_id": entity_id}
+        
+        # Extract RGBW color
+        rgbw = picker_state.get("rgbw")
+        if rgbw:
+            r = int(rgbw.get("r", 255))
+            g = int(rgbw.get("g", 255))
+            b = int(rgbw.get("b", 255))
+            w = int(rgbw.get("w", 0))
+            data["rgbw_color"] = [r, g, b, w]
+        
+        # Extract brightness
+        if "brightness" in picker_state:
+            data["brightness_pct"] = int(picker_state["brightness"])
+        
+        await hass.services.async_call("light", "turn_on", data, blocking=False)
 def _level_0_100(hass: HomeAssistant, tile: dict[str, Any]) -> dict[str, Any]:
     return {"levelBottom": 0, "levelTop": 100}
 
@@ -364,6 +433,15 @@ async def _select_handle_event(
 
 
 TILE_TYPES: dict[str, TileType] = {
+    "rgbw": TileType(
+        style="colorPickerRgbCct",
+        domain="light",
+        icon="_bulb",
+        label="RGBW light (RGB + white channel)",
+        config_extra=None,
+        build_state=_rgbw_build_state,
+        handle_event=_rgbw_handle_event,
+    ),
     "cct": TileType(
         style="colorPickerCct",
         domain="light",
