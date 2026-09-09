@@ -86,35 +86,40 @@ async def _cct_handle_event(
 
 # ─── colorPickerRgbCct → light (RGBW: RGB color + white channel + brightness) ────
 def _rgbw_build_state(hass: HomeAssistant, tile: dict[str, Any]) -> dict[str, Any] | None:
-    """Build OXRS RGBW tile state from HA light entity."""
+    """Build OXRS RGBW tile state from HA light entity.
+    
+    Sends to panel:
+    - colorRgb: {r, g, b} extracted from rgbw_color
+    - brightness: 0-100
+    - state: on/off
+    """
     entity_id = tile[CONF_ENTITY_ID]
     state = hass.states.get(entity_id)
     is_on = state is not None and state.state == "on"
     brightness = 0
-    r, g, b, w = 255, 255, 255, 0
+    r, g, b = 255, 255, 255
     
     if state is not None:
         brightness = state.attributes.get("brightness") or 0
-        # Get RGBW color - stored as rgbw_color tuple (r, g, b, w)
+        # Get RGBW color - use rgbw_color first, fallback to values
         rgbw_color = state.attributes.get("rgbw_color")
-        if rgbw_color and len(rgbw_color) >= 4:
-            r, g, b, w = rgbw_color[0], rgbw_color[1], rgbw_color[2], rgbw_color[3]
+        if rgbw_color and len(rgbw_color) >= 3:
+            r, g, b = rgbw_color[0], rgbw_color[1], rgbw_color[2]
         else:
             # Fallback to values attribute if rgbw_color not set
             values = state.attributes.get("values")
-            if values and len(values) >= 4:
-                r, g, b, w = values[0], values[1], values[2], values[3]
+            if values and len(values) >= 3:
+                r, g, b = values[0], values[1], values[2]
     
     return {
         "screen": tile[CONF_SCREEN],
         "tile": tile[CONF_TILE],
         "state": "on" if is_on else "off",
         "colorPicker": {
-            "rgbw": {
+            "colorRgb": {  # Send as colorRgb (not rgbw) to match OXRS format
                 "r": int(r),
                 "g": int(g),
                 "b": int(b),
-                "w": int(w),
             },
             "brightness": round(int(brightness) / 255 * 100),
         },
@@ -124,7 +129,18 @@ def _rgbw_build_state(hass: HomeAssistant, tile: dict[str, Any]) -> dict[str, An
 async def _rgbw_handle_event(
     hass: HomeAssistant, tile: dict[str, Any], payload: dict[str, Any]
 ) -> None:
-    """Process OXRS RGBW tile event and apply to HA light entity."""
+    """Process OXRS RGBW tile event and apply to HA light entity.
+    
+    OXRS colorPickerRgbCct sends:
+    - colorRgb: {r, g, b} (RGB only, no W)
+    - colorKelvin: always 0 for RGBW
+    - brightness: 0 if not adjusted
+    
+    We need to:
+    - Extract R, G, B from colorRgb
+    - Preserve W (white) from current light state
+    - Only override brightness if non-zero
+    """
     entity_id = tile[CONF_ENTITY_ID]
     ptype = payload.get("type")
     
@@ -135,23 +151,32 @@ async def _rgbw_handle_event(
         )
         return
     
-    # Color picker: RGBW + brightness change
+    # Color picker: RGB from panel + preserve white channel from current state
     if ptype == "colorPicker":
         picker_state = payload.get("state") or {}
         data: dict[str, Any] = {"entity_id": entity_id}
         
-        # Extract RGBW color
-        rgbw = picker_state.get("rgbw")
-        if rgbw:
-            r = int(rgbw.get("r", 255))
-            g = int(rgbw.get("g", 255))
-            b = int(rgbw.get("b", 255))
-            w = int(rgbw.get("w", 0))
-            data["rgbw_color"] = [r, g, b, w]
+        # Get current light state to preserve white channel
+        current_state = hass.states.get(entity_id)
+        current_w = 0
+        if current_state:
+            current_rgbw = current_state.attributes.get("rgbw_color")
+            if current_rgbw and len(current_rgbw) >= 4:
+                current_w = current_rgbw[3]  # Get white value from current state
         
-        # Extract brightness
-        if "brightness" in picker_state:
-            data["brightness_pct"] = int(picker_state["brightness"])
+        # Extract RGB color from OXRS payload (colorRgb, not rgbw)
+        color_rgb = picker_state.get("colorRgb")
+        if color_rgb:
+            r = int(color_rgb.get("r", 255))
+            g = int(color_rgb.get("g", 255))
+            b = int(color_rgb.get("b", 255))
+            # Preserve the white channel from current state
+            data["rgbw_color"] = [r, g, b, current_w]
+        
+        # Only set brightness if it's non-zero (avoid turning off light)
+        brightness = picker_state.get("brightness", 0)
+        if brightness > 0:
+            data["brightness_pct"] = int(brightness)
         
         await hass.services.async_call("light", "turn_on", data, blocking=False)
 def _level_0_100(hass: HomeAssistant, tile: dict[str, Any]) -> dict[str, Any]:
