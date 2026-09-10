@@ -382,16 +382,16 @@ class OxrsOptionsFlow(OptionsFlow):
             background_images = []
             
             if hub:
-                # Try to get images from first panel's manager
-                for entry_id, panel in hub.items():
-                    if hasattr(panel, "background_images"):
+                # Try to get images from this entry's panel manager
+                entry_id = self._entry.entry_id if hasattr(self, "_entry") else None
+                if entry_id:
+                    panel = hub.get(entry_id)
+                    if panel and hasattr(panel, "background_images"):
                         images = panel.background_images.list_images()
-                        # Use image_name as value (that's what OXRS firmware expects)
                         background_images = [
                             {"value": img["image_name"], "label": img["image_name"]}
                             for img in images
                         ]
-                        break
             
             # Add "None" option to skip background image
             image_options = [{"value": "none", "label": "No background image"}]
@@ -530,16 +530,18 @@ class OxrsOptionsFlow(OptionsFlow):
                         errors={"base": "no_name"},
                     )
                 
-                # Get the hub/panel object to access background_images manager
-                entry = self.hass.data[DOMAIN].get(self._current_entry_id) if hasattr(self, "_current_entry_id") else None
-                if not entry or not hasattr(entry, "background_images"):
-                    _LOGGER.error("Cannot access background image manager")
-                    return self.async_abort(reason="invalid_format")
-                
-                # Read and process the image file
+                # Get the panel object from the entry
                 try:
+                    entry_id = self._entry.entry_id
+                    panel = self.hass.data.get(DOMAIN, {}).get(entry_id)
+                    
+                    if not panel or not hasattr(panel, "background_images"):
+                        _LOGGER.error(f"Cannot access panel for entry {entry_id}")
+                        return self.async_abort(reason="invalid_format")
+                    
+                    # Read and process the image file
                     image_path = image_file[0] if isinstance(image_file, list) else image_file
-                    success, message = await entry.background_images.add_image_from_file(
+                    success, message = await panel.background_images.add_image_from_file(
                         image_path, image_name
                     )
                     

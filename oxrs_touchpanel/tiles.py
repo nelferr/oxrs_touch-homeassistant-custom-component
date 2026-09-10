@@ -103,12 +103,12 @@ def _rgbw_build_state(hass: HomeAssistant, tile: dict[str, Any]) -> dict[str, An
         brightness = state.attributes.get("brightness") or 0
         # Get RGBW color - use rgbw_color first, fallback to values
         rgbw_color = state.attributes.get("rgbw_color")
-        if rgbw_color and len(rgbw_color) >= 3:
+        if rgbw_color and isinstance(rgbw_color, (list, tuple)) and len(rgbw_color) >= 3:
             r, g, b = rgbw_color[0], rgbw_color[1], rgbw_color[2]
         else:
             # Fallback to values attribute if rgbw_color not set
             values = state.attributes.get("values")
-            if values and len(values) >= 3:
+            if values and isinstance(values, (list, tuple)) and len(values) >= 3:
                 r, g, b = values[0], values[1], values[2]
     
     return {
