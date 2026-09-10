@@ -41,7 +41,7 @@
       "add_tile_type": {
         "title": "Add a tile — choose type (screen {screen})",
         "data": {
-          "type": "Tile type"
+          "tile_type": "Tile type"
         }
       },
       "add_tile_details": {
@@ -53,19 +53,11 @@
           "icon": "Icon"
         }
       },
-      "remove_tile": {
-        "title": "Remove a tile",
-        "data": {
-          "index": "Tile to remove"
-        }
-      }
-    },
-    "abort": {
       "add_tile_background": {
         "title": "Add background image (optional)",
         "description": "Select a background image for this tile, or skip to continue without one. {images_available} for {tile}.",
         "data": {
-          "background_image_id": "Background image"
+          "background_image_name": "Background image"
         }
       },
       "manage_background_images": {
@@ -76,6 +68,14 @@
           "image_name": "Image name (display label)"
         }
       },
+      "remove_tile": {
+        "title": "Remove a tile",
+        "data": {
+          "index": "Tile to remove"
+        }
+      }
+    },
+    "abort": {
       "no_tiles": "There are no tiles to remove.",
       "screen_full": "That screen has no free tile positions. Choose another screen or remove a tile first.",
       "invalid_tile_style": "Please select a valid tile style.",
