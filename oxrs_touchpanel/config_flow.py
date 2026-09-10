@@ -510,24 +510,12 @@ class OxrsOptionsFlow(OptionsFlow):
     async def async_step_manage_background_images(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Manage background images for tiles."""
+        """Add a background image — paste base64 from OXRS Asset Generator."""
+        import re as _re, base64 as _b64, hashlib as _hl
         try:
             if user_input is not None:
-                image_file = user_input.get("image_file")
-                image_name = user_input.get("image_name", "").strip()
-
-                _LOGGER.debug(
-                    f"manage_background_images: image_file type={type(image_file)}, "
-                    f"image_name={image_name!r}, "
-                    f"value_preview={str(image_file)[:80] if image_file else None}"
-                )
-
-                if not image_file:
-                    return self.async_show_form(
-                        step_id="manage_background_images",
-                        data_schema=self._build_background_images_schema(),
-                        errors={"base": "no_file"},
-                    )
+                image_name   = user_input.get("image_name",   "").strip()
+                image_base64 = user_input.get("image_base64", "").strip()
 
                 if not image_name:
                     return self.async_show_form(
@@ -535,100 +523,90 @@ class OxrsOptionsFlow(OptionsFlow):
                         data_schema=self._build_background_images_schema(),
                         errors={"base": "no_name"},
                     )
+                if not image_base64:
+                    return self.async_show_form(
+                        step_id="manage_background_images",
+                        data_schema=self._build_background_images_schema(),
+                        errors={"base": "no_file"},
+                    )
 
-                # HA FileSelector returns a data URI: "data:<mime>;base64,<data>"
-                # Extract the base64 part and format for OXRS
+                # Strip data URI prefix if user pasted from browser
+                m = _re.match(r"data:image/[^;]+;base64,(.+)", image_base64, _re.DOTALL)
+                if m:
+                    image_base64 = m.group(1).strip()
+
+                # Validate base64
                 try:
-                    import re
-                    data_uri = image_file[0] if isinstance(image_file, list) else image_file
-
-                    # Parse the data URI
-                    match = re.match(
-                        r"data:image/(?P<fmt>jpeg|jpg|png|gif);base64,(?P<data>.+)",
-                        data_uri,
-                        re.DOTALL,
-                    )
-                    if not match:
-                        _LOGGER.error(
-                            f"Unexpected image_file format: {str(data_uri)[:100]}"
-                        )
-                        return self.async_show_form(
-                            step_id="manage_background_images",
-                            data_schema=self._build_background_images_schema(),
-                            errors={"base": "image_error"},
-                        )
-
-                    image_format = match.group("fmt").replace("jpeg", "jpg")
-                    b64_data = match.group("data").strip()
-
-                    # Validate size — OXRS crashes if encoded image > 4KB
-                    if len(b64_data) > 5500:  # ~4KB binary ≈ ~5.5KB base64
-                        _LOGGER.warning(
-                            f"Image too large: {len(b64_data)} base64 chars "
-                            f"(OXRS limit ~4KB / ~5.5KB base64)"
-                        )
-                        return self.async_show_form(
-                            step_id="manage_background_images",
-                            data_schema=self._build_background_images_schema(),
-                            errors={"base": "image_error"},
-                        )
-
-                    # Generate stable ID from content hash
-                    import hashlib
-                    image_id = hashlib.md5(b64_data.encode()).hexdigest()[:12]
-
-                    # Get the panel to store the image
-                    entry_id = self._entry.entry_id
-                    panel = self.hass.data.get(DOMAIN, {}).get(entry_id)
-
-                    if not panel or not hasattr(panel, "background_images"):
-                        _LOGGER.error(f"Cannot access panel for entry {entry_id}")
-                        return self.async_abort(reason="invalid_format")
-
-                    # Store as raw bytes (decode from base64)
-                    import base64 as b64mod
-                    image_bytes = b64mod.b64decode(b64_data)
-
-                    success = await panel.background_images.add_image(
-                        image_id, image_name, image_bytes, image_format
+                    image_bytes = _b64.b64decode(image_base64, validate=True)
+                except Exception:
+                    return self.async_show_form(
+                        step_id="manage_background_images",
+                        data_schema=self._build_background_images_schema(),
+                        errors={"base": "image_error"},
                     )
 
-                    if success:
-                        _LOGGER.info(
-                            f"Background image stored: {image_name!r} "
-                            f"({image_format}, {len(image_bytes)} bytes)"
-                        )
-                        # Persist to config entry
-                        new_options = dict(self._entry.options)
-                        from .const import CONF_BACKGROUND_IMAGES
-                        new_options[CONF_BACKGROUND_IMAGES] = (
-                            panel.background_images._images
-                        )
-                        self.hass.config_entries.async_update_entry(
-                            self._entry, options=new_options
-                        )
-                        return self.async_abort(reason="image_uploaded")
-                    else:
-                        return self.async_show_form(
-                            step_id="manage_background_images",
-                            data_schema=self._build_background_images_schema(),
-                            errors={"base": "image_error"},
-                        )
-
-                except Exception as err:
-                    _LOGGER.error(
-                        f"Error processing image data URI: {err}", exc_info=True
+                # OXRS firmware crashes on images > 4 KB
+                if len(image_bytes) > 4096:
+                    _LOGGER.warning(
+                        f"Image too large: {len(image_bytes)} bytes (OXRS limit 4 KB)"
                     )
                     return self.async_show_form(
                         step_id="manage_background_images",
                         data_schema=self._build_background_images_schema(),
-                        errors={"base": "file_error"},
+                        errors={"base": "image_too_large"},
                     )
 
-            schema = self._build_background_images_schema()
+                # OXRS forbids names starting with underscore
+                if image_name.startswith("_"):
+                    return self.async_show_form(
+                        step_id="manage_background_images",
+                        data_schema=self._build_background_images_schema(),
+                        errors={"base": "invalid_image_name"},
+                    )
+
+                # Detect format from magic bytes
+                if image_bytes[:4] == b"\x89PNG":
+                    fmt = "png"
+                elif image_bytes[:2] == b"\xff\xd8":
+                    fmt = "jpg"
+                elif image_bytes[:3] == b"GIF":
+                    fmt = "gif"
+                else:
+                    fmt = "png"
+
+                image_id = _hl.md5(image_base64.encode()).hexdigest()[:12]
+
+                entry_id = self._entry.entry_id
+                panel = self.hass.data.get(DOMAIN, {}).get(entry_id)
+                if not panel or not hasattr(panel, "background_images"):
+                    _LOGGER.error(f"Cannot access panel for entry {entry_id}")
+                    return self.async_abort(reason="invalid_format")
+
+                success = await panel.background_images.add_image(
+                    image_id, image_name, image_bytes, fmt
+                )
+                if not success:
+                    return self.async_show_form(
+                        step_id="manage_background_images",
+                        data_schema=self._build_background_images_schema(),
+                        errors={"base": "image_error"},
+                    )
+
+                from .const import CONF_BACKGROUND_IMAGES
+                new_options = dict(self._entry.options)
+                new_options[CONF_BACKGROUND_IMAGES] = panel.background_images._images
+                self.hass.config_entries.async_update_entry(
+                    self._entry, options=new_options
+                )
+                _LOGGER.info(
+                    f"Background image saved: '{image_name}' "
+                    f"(id={image_id}, {len(image_bytes)} B, {fmt})"
+                )
+                return self.async_abort(reason="image_uploaded")
+
             return self.async_show_form(
                 step_id="manage_background_images",
-                data_schema=schema,
+                data_schema=self._build_background_images_schema(),
             )
         except Exception as err:
             _LOGGER.error(
@@ -637,12 +615,12 @@ class OxrsOptionsFlow(OptionsFlow):
             return self.async_abort(reason="invalid_format")
 
     def _build_background_images_schema(self) -> vol.Schema:
-        """Build schema for background image management."""
+        """Build schema for background image management — paste base64 string."""
         return vol.Schema(
             {
-                vol.Required("image_file"): selector.FileSelector(
-                    selector.FileSelectorConfig(accept=".jpg,.jpeg,.png,.gif")
-                ),
                 vol.Required("image_name"): selector.TextSelector(),
+                vol.Required("image_base64"): selector.TextSelector(
+                    selector.TextSelectorConfig(multiline=True)
+                ),
             }
         )

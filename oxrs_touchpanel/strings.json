@@ -55,17 +55,17 @@
       },
       "add_tile_background": {
         "title": "Add background image (optional)",
-        "description": "Select a background image for this tile, or skip to continue without one. {images_available} for {tile}.",
+        "description": "Select a background image for {tile}. {images_available}.",
         "data": {
           "background_image_name": "Background image"
         }
       },
       "manage_background_images": {
-        "title": "Manage background images",
-        "description": "Upload, view, and manage background images for tiles. Supported formats: JPG, PNG, GIF (max 500KB).",
+        "title": "Add background image",
+        "description": "Generate a base64 image string using the OXRS Asset Generator at https://oxrs.io/tools/asset-generator.html then paste the imageBase64 value below. Images must be under 4 KB and names cannot start with an underscore.",
         "data": {
-          "image_file": "Image file (JPG, PNG, GIF)",
-          "image_name": "Image name (display label)"
+          "image_name": "Image name (used to reference this image on tiles)",
+          "image_base64": "Base64 image string (paste from OXRS Asset Generator)"
         }
       },
       "remove_tile": {
@@ -79,15 +79,15 @@
       "no_tiles": "There are no tiles to remove.",
       "screen_full": "That screen has no free tile positions. Choose another screen or remove a tile first.",
       "invalid_tile_style": "Please select a valid tile style.",
-      "invalid_actions": "Error creating flexible tile. Check the logs for details.",
       "invalid_format": "Error selecting tile format. Check the logs for details.",
       "invalid_type": "Error selecting tile type. Check the logs for details.",
       "invalid_details": "Error setting tile details. Check the logs for details.",
-      "no_file": "Please select an image file.",
       "no_name": "Please enter an image name.",
-      "image_error": "Error processing image. Check file format and size (max 500KB).",
-      "file_error": "Error reading file. Please try again.",
-      "image_uploaded": "Background image uploaded successfully!"
+      "no_file": "Please paste the base64 image string.",
+      "image_error": "Invalid base64 string. Copy the imageBase64 value from the OXRS Asset Generator output.",
+      "image_too_large": "Image is larger than 4 KB. Use the OXRS Asset Generator (https://oxrs.io/tools/asset-generator.html) to resize it first.",
+      "invalid_image_name": "Image name cannot start with an underscore.",
+      "image_uploaded": "Background image saved successfully!"
     }
   }
 }
