@@ -252,27 +252,75 @@ class BackgroundImageManager:
         if "background_image_id" in tile_config:
             del tile_config["background_image_id"]
 
-    def build_oxrs_tile_payload(
-        self, screen: int, tile: int, image_id: str
-    ) -> dict[str, Any] | None:
-        """Build OXRS MQTT payload for tile background image.
+    def build_oxrs_add_image_payload(self, image_id: str) -> dict[str, Any] | None:
+        """Build OXRS MQTT payload to upload/store background image.
         
-        Used for cmnd/<device-client-id> to send background image to OXRS panel.
+        OXRS Firmware Two-Step Process:
+        1. Send addImage command with name and base64 data
+        2. Reference image by name in tile configuration
         
-        OXRS Firmware Behavior:
-        - Sends base64-encoded image in JSON payload
-        - Field: "backgroundImage" with base64 string
-        - Panel displays image as tile background
-        - Can combine with other elements: text, icon color, level display
-        - If tile had an icon, it's overlaid on the background
+        This method builds Step 1: Upload the image to panel memory.
+        After successful upload, use image name to reference in tiles.
+        
+        Args:
+            image_id: Background image ID to upload
+            
+        Returns:
+            OXRS MQTT payload dict for addImage command, or None if image not found
+            
+        Example payload:
+        {
+            "addImage": {
+                "name": "living_room_bg_abc123",
+                "imageBase64": "iVBORw0KGgo..."
+            }
+        }
+        
+        Note: Image names are auto-generated from MD5 hash of file
+        Images are NOT persistent and must be reloaded on panel restart
+        """
+        image = self.get_image(image_id)
+        if not image:
+            _LOGGER.warning(f"Cannot build addImage payload: image not found: {image_id}")
+            return None
+        
+        try:
+            b64_data = image.get(CONFIG_IMAGE_DATA, "")
+            image_name = image.get(CONFIG_IMAGE_NAME, "")
+            
+            # Validate image name (cannot start with underscore in OXRS)
+            if image_name.startswith("_"):
+                _LOGGER.warning(f"Image name cannot start with underscore: {image_name}")
+                image_name = image_name.lstrip("_")
+            
+            return {
+                "addImage": {
+                    "name": image_name,
+                    "imageBase64": b64_data,
+                }
+            }
+        except Exception as err:
+            _LOGGER.error(f"Error building addImage payload for {image_id}: {err}")
+            return None
+
+    def build_oxrs_tile_reference_payload(
+        self, screen: int, tile: int, image_name: str
+    ) -> dict[str, Any]:
+        """Build OXRS MQTT payload to apply background image to tile.
+        
+        OXRS Firmware Two-Step Process:
+        1. addImage (handled by build_oxrs_add_image_payload)
+        2. Reference image by name in tile configuration ← This method
+        
+        This method builds Step 2: Apply previously uploaded image to a tile.
         
         Args:
             screen: Screen number (1-based)
             tile: Tile number (1-based)
-            image_id: Background image ID
+            image_name: Previously registered image name
             
         Returns:
-            OXRS MQTT payload dict, or None if image not found
+            OXRS MQTT payload dict for tiles command
             
         Example payload:
         {
@@ -280,52 +328,21 @@ class BackgroundImageManager:
                 {
                     "screen": 1,
                     "tile": 1,
-                    "backgroundImage": "iVBORw0KGgo..."  // base64 PNG data
+                    "backgroundImage": {
+                        "name": "living_room_bg_abc123"
+                    }
                 }
             ]
         }
-        """
-        image = self.get_image(image_id)
-        if not image:
-            _LOGGER.warning(f"Cannot build payload: image not found: {image_id}")
-            return None
-        
-        try:
-            b64_data = image.get(CONFIG_IMAGE_DATA, "")
-            
-            return {
-                "tiles": [
-                    {
-                        "screen": screen,
-                        "tile": tile,
-                        "backgroundImage": b64_data,
-                    }
-                ]
-            }
-        except Exception as err:
-            _LOGGER.error(f"Error building OXRS payload for {image_id}: {err}")
-            return None
-
-    def remove_oxrs_tile_background(
-        self, screen: int, tile: int
-    ) -> dict[str, Any]:
-        """Build OXRS MQTT payload to remove background image from tile.
-        
-        Removes the background image but keeps icon/other elements.
-        
-        Args:
-            screen: Screen number (1-based)
-            tile: Tile number (1-based)
-            
-        Returns:
-            OXRS MQTT payload dict
         """
         return {
             "tiles": [
                 {
                     "screen": screen,
                     "tile": tile,
-                    "backgroundImage": "",  # Empty string removes background
+                    "backgroundImage": {
+                        "name": image_name,
+                    }
                 }
             ]
         }

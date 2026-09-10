@@ -368,11 +368,11 @@ class OxrsOptionsFlow(OptionsFlow):
                 # Add tile to list
                 self._tiles.append(self._new_tile_config)
                 
-                # Optionally add background image
-                background_image_id = user_input.get("background_image_id")
-                if background_image_id and background_image_id != "none":
-                    self._tiles[-1]["background_image_id"] = background_image_id
-                    _LOGGER.info(f"Added background image {background_image_id} to tile")
+                # Optionally add background image (store image_name, not id)
+                background_image_name = user_input.get("background_image_name")
+                if background_image_name and background_image_name != "none":
+                    self._tiles[-1]["background_image_name"] = background_image_name
+                    _LOGGER.info(f"Added background image '{background_image_name}' to tile")
                 
                 _LOGGER.info(f"Tile created at screen {self._new_screen}/position {self._new_tile_config[CONF_TILE]}")
                 return self.async_create_entry(title="", data={CONF_TILES: self._tiles})
@@ -386,8 +386,9 @@ class OxrsOptionsFlow(OptionsFlow):
                 for entry_id, panel in hub.items():
                     if hasattr(panel, "background_images"):
                         images = panel.background_images.list_images()
+                        # Use image_name as value (that's what OXRS firmware expects)
                         background_images = [
-                            {"value": img["image_id"], "label": img["image_name"]}
+                            {"value": img["image_name"], "label": img["image_name"]}
                             for img in images
                         ]
                         break
@@ -398,7 +399,7 @@ class OxrsOptionsFlow(OptionsFlow):
             
             schema = vol.Schema(
                 {
-                    vol.Optional("background_image_id", default="none"): selector.SelectSelector(
+                    vol.Optional("background_image_name", default="none"): selector.SelectSelector(
                         selector.SelectSelectorConfig(
                             options=image_options,
                             mode=selector.SelectSelectorMode.DROPDOWN,

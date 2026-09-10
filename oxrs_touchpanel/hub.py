@@ -119,8 +119,8 @@ class OxrsPanel:
         self._track_entities()
         # Push config now in case the panel is already online.
         await self.async_push_config()
-        # Send background images for any tiles that have them
-        await self.async_push_background_images()
+        # Send all background images to panel (Step 1: addImage commands)
+        await self.async_push_images_to_panel()
 
     def _track_entities(self) -> None:
         """Track entity changes for tiles with entity bindings (old and new format)."""
@@ -298,47 +298,67 @@ class OxrsPanel:
                 json.dumps({"tiles": payload_tiles}),
             )
 
-    async def async_push_background_images(self) -> None:
-        """Send background images to panel for any tiles that have them.
+    async def async_push_images_to_panel(self) -> None:
+        """Send all background images to panel (Step 1: addImage commands).
         
-        This is called after configuration is pushed to apply background images
-        to tiles via OXRS cmnd/ topic with the image data.
+        OXRS Firmware Two-Step Process:
+        1. Upload/register images using addImage command ← This method
+        2. Reference images by name in tile configuration (handled in tile state building)
+        
+        This is called during setup after config push to ensure images are available
+        before tiles try to reference them by name.
+        
+        Images are NOT persistent on the panel - they must be resent each time
+        the panel comes online. This method is called during async_setup().
+        
+        Workflow:
+        - Get all stored background images from manager
+        - Build addImage payload for each
+        - Send via cmnd/ topic with small delays between sends
+        - Panel stores images in memory by name
+        - Tiles can then reference by name
         """
-        _LOGGER.debug("Checking tiles for background images to send to panel...")
+        if not self.background_images.list_images():
+            _LOGGER.debug("No background images to send to panel")
+            return
         
-        for tile in self.tiles:
-            background_image_id = tile.get("background_image_id")
-            if not background_image_id:
-                continue
+        _LOGGER.debug("Sending background images to panel (Step 1: addImage)...")
+        
+        try:
+            for image in self.background_images.list_images():
+                image_id = image.get("image_id")
+                if not image_id:
+                    continue
+                
+                # Build addImage payload
+                payload = self.background_images.build_oxrs_add_image_payload(image_id)
+                if not payload:
+                    _LOGGER.warning(f"Failed to build addImage payload for {image_id}")
+                    continue
+                
+                # Send to panel
+                _LOGGER.debug(
+                    f"Sending image '{image.get('image_name')}' to panel "
+                    f"(format: {image.get('image_format')}, "
+                    f"size: {image.get('image_size')} bytes)"
+                )
+                
+                await mqtt.async_publish(
+                    self.hass,
+                    topic_cmnd(self.client_id),
+                    json.dumps(payload),
+                )
+                
+                # Small delay between images to avoid overwhelming panel
+                await asyncio.sleep(0.2)
             
-            try:
-                screen = tile[CONF_SCREEN]
-                tile_num = tile[CONF_TILE]
-                
-                # Build OXRS MQTT payload with base64 image data
-                payload = self.background_images.build_oxrs_tile_payload(
-                    screen, tile_num, background_image_id
-                )
-                
-                if payload:
-                    _LOGGER.debug(
-                        f"Sending background image {background_image_id} "
-                        f"to screen {screen}, tile {tile_num}"
-                    )
-                    await mqtt.async_publish(
-                        self.hass,
-                        topic_cmnd(self.client_id),
-                        json.dumps(payload),
-                    )
-                else:
-                    _LOGGER.warning(
-                        f"Failed to build OXRS payload for background image {background_image_id}"
-                    )
-            except Exception as err:
-                _LOGGER.error(
-                    f"Error sending background image for tile {tile_num}: {err}",
-                    exc_info=True
-                )
+            _LOGGER.info(f"Sent {len(self.background_images.list_images())} background images to panel")
+            
+        except Exception as err:
+            _LOGGER.error(
+                f"Error sending background images to panel: {err}",
+                exc_info=True
+            )
 
     @callback
     def _on_entity_change(self, event: Event) -> None:
