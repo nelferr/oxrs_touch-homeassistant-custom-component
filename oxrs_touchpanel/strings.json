@@ -61,6 +61,13 @@
       }
     },
     "abort": {
+      "add_tile_background": {
+        "title": "Add background image (optional)",
+        "description": "Select a background image for this tile, or skip to continue without one. {images_available} for {tile}.",
+        "data": {
+          "background_image_id": "Background image"
+        }
+      },
       "manage_background_images": {
         "title": "Manage background images",
         "description": "Upload, view, and manage background images for tiles. Supported formats: JPG, PNG, GIF (max 500KB).",

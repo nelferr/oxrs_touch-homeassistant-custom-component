@@ -125,6 +125,7 @@ class OxrsOptionsFlow(OptionsFlow):
         )
         self._new_type: str | None = None
         self._new_screen: int = 1
+        self._new_tile_config: dict[str, Any] | None = None
         
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -300,18 +301,17 @@ class OxrsOptionsFlow(OptionsFlow):
 
             if user_input is not None:
                 _LOGGER.debug(f"Creating hardcoded tile with entity: {user_input[CONF_ENTITY_ID]}")
-                self._tiles.append(
-                    {
-                        CONF_SCREEN: self._new_screen,
-                        CONF_TILE: int(user_input[CONF_TILE]),
-                        CONF_TYPE: self._new_type,
-                        CONF_ENTITY_ID: user_input[CONF_ENTITY_ID],
-                        CONF_LABEL: user_input.get(CONF_LABEL, ""),
-                        CONF_ICON: user_input.get(CONF_ICON, definition["icon"]),
-                    }
-                )
-                _LOGGER.info(f"Hardcoded tile created at {self._new_screen}/{user_input[CONF_TILE]}")
-                return self.async_create_entry(title="", data={CONF_TILES: self._tiles})
+                # Store tile details for next step (background image selection)
+                self._new_tile_config = {
+                    CONF_SCREEN: self._new_screen,
+                    CONF_TILE: int(user_input[CONF_TILE]),
+                    CONF_TYPE: self._new_type,
+                    CONF_ENTITY_ID: user_input[CONF_ENTITY_ID],
+                    CONF_LABEL: user_input.get(CONF_LABEL, ""),
+                    CONF_ICON: user_input.get(CONF_ICON, definition["icon"]),
+                }
+                # Go to background image selection step
+                return await self.async_step_add_tile_background()
 
             tile_options = [
                 {"value": str(i), "label": f"Position {i}"}
@@ -356,6 +356,71 @@ class OxrsOptionsFlow(OptionsFlow):
             )
         except Exception as err:
             _LOGGER.error(f"Error in async_step_add_tile_details: {err}", exc_info=True)
+            return self.async_abort(reason="invalid_details")
+
+    async def async_step_add_tile_background(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Step 3: optionally select a background image for the tile."""
+        try:
+            _LOGGER.debug(f"async_step_add_tile_background called with input: {list(user_input.keys()) if user_input else 'None'}")
+            
+            assert self._new_tile_config is not None
+            
+            if user_input is not None:
+                # Add tile to list
+                self._tiles.append(self._new_tile_config)
+                
+                # Optionally add background image
+                background_image_id = user_input.get("background_image_id")
+                if background_image_id and background_image_id != "none":
+                    self._tiles[-1]["background_image_id"] = background_image_id
+                    _LOGGER.info(f"Added background image {background_image_id} to tile")
+                
+                _LOGGER.info(f"Tile created at screen {self._new_screen}/position {self._new_tile_config[CONF_TILE]}")
+                return self.async_create_entry(title="", data={CONF_TILES: self._tiles})
+            
+            # Get background image options from manager
+            hub = self.hass.data.get(DOMAIN, {})
+            background_images = []
+            
+            if hub:
+                # Try to get images from first panel's manager
+                for entry_id, panel in hub.items():
+                    if hasattr(panel, "background_images"):
+                        images = panel.background_images.list_images()
+                        background_images = [
+                            {"value": img["image_id"], "label": img["image_name"]}
+                            for img in images
+                        ]
+                        break
+            
+            # Add "None" option to skip background image
+            image_options = [{"value": "none", "label": "No background image"}]
+            image_options.extend(background_images)
+            
+            schema = vol.Schema(
+                {
+                    vol.Optional("background_image_id", default="none"): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=image_options,
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                }
+            )
+            
+            _LOGGER.debug("Showing background image selection form")
+            return self.async_show_form(
+                step_id="add_tile_background",
+                data_schema=schema,
+                description_placeholders={
+                    "tile": f"Screen {self._new_screen}, Position {self._new_tile_config[CONF_TILE]}",
+                    "images_available": f"{len(background_images)} image(s) available",
+                },
+            )
+        except Exception as err:
+            _LOGGER.error(f"Error in async_step_add_tile_background: {err}", exc_info=True)
             return self.async_abort(reason="invalid_details")
 
     def _build_add_tile_actions_schema(self, free: list[int]) -> vol.Schema:
