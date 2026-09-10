@@ -541,12 +541,29 @@ class OxrsOptionsFlow(OptionsFlow):
                     
                     # Read and process the image file
                     image_path = image_file[0] if isinstance(image_file, list) else image_file
+                    
+                    # Verify file exists
+                    from pathlib import Path
+                    if not Path(image_path).exists():
+                        _LOGGER.error(f"Image file not found: {image_path}")
+                        return self.async_show_form(
+                            step_id="manage_background_images",
+                            data_schema=self._build_background_images_schema(),
+                            errors={"base": "file_error"},
+                            description_placeholders={"error": f"File not found: {image_path}"},
+                        )
+                    
                     success, message = await panel.background_images.add_image_from_file(
                         image_path, image_name
                     )
                     
                     if success:
                         _LOGGER.info(f"Background image uploaded: {message}")
+                        # Update the config entry with new images data
+                        self.hass.config_entries.async_update_entry(
+                            self._entry,
+                            options=panel.background_images.config_entry_data
+                        )
                         return self.async_abort(reason="image_uploaded")
                     else:
                         return self.async_show_form(
