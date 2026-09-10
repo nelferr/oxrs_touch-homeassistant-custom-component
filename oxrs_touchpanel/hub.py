@@ -119,6 +119,8 @@ class OxrsPanel:
         self._track_entities()
         # Push config now in case the panel is already online.
         await self.async_push_config()
+        # Send background images for any tiles that have them
+        await self.async_push_background_images()
 
     def _track_entities(self) -> None:
         """Track entity changes for tiles with entity bindings (old and new format)."""
@@ -295,6 +297,48 @@ class OxrsPanel:
                 topic_cmnd(self.client_id),
                 json.dumps({"tiles": payload_tiles}),
             )
+
+    async def async_push_background_images(self) -> None:
+        """Send background images to panel for any tiles that have them.
+        
+        This is called after configuration is pushed to apply background images
+        to tiles via OXRS cmnd/ topic with the image data.
+        """
+        _LOGGER.debug("Checking tiles for background images to send to panel...")
+        
+        for tile in self.tiles:
+            background_image_id = tile.get("background_image_id")
+            if not background_image_id:
+                continue
+            
+            try:
+                screen = tile[CONF_SCREEN]
+                tile_num = tile[CONF_TILE]
+                
+                # Build OXRS MQTT payload with base64 image data
+                payload = self.background_images.build_oxrs_tile_payload(
+                    screen, tile_num, background_image_id
+                )
+                
+                if payload:
+                    _LOGGER.debug(
+                        f"Sending background image {background_image_id} "
+                        f"to screen {screen}, tile {tile_num}"
+                    )
+                    await mqtt.async_publish(
+                        self.hass,
+                        topic_cmnd(self.client_id),
+                        json.dumps(payload),
+                    )
+                else:
+                    _LOGGER.warning(
+                        f"Failed to build OXRS payload for background image {background_image_id}"
+                    )
+            except Exception as err:
+                _LOGGER.error(
+                    f"Error sending background image for tile {tile_num}: {err}",
+                    exc_info=True
+                )
 
     @callback
     def _on_entity_change(self, event: Event) -> None:
