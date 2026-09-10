@@ -131,7 +131,7 @@ class OxrsOptionsFlow(OptionsFlow):
     ) -> ConfigFlowResult:
         """Show the tile-management menu."""
         return self.async_show_menu(
-            step_id="init", menu_options=["add_tile", "remove_tile"]
+            step_id="init", menu_options=["add_tile", "remove_tile", "manage_background_images"]
         )
 
     async def async_step_add_tile(
@@ -443,3 +443,44 @@ class OxrsOptionsFlow(OptionsFlow):
             }
         )
         return self.async_show_form(step_id="remove_tile", data_schema=schema)
+
+    async def async_step_manage_background_images(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Manage background images for tiles."""
+        try:
+            if user_input is not None:
+                image_file = user_input.get("image_file")
+                image_name = user_input.get("image_name", "Untitled")
+                
+                if not image_file or not image_name:
+                    return self.async_show_form(
+                        step_id="manage_background_images",
+                        data_schema=self._build_background_images_schema(),
+                        errors={"base": "invalid_image"},
+                    )
+                
+                _LOGGER.info(f"Background image management: {image_name}")
+                # For now, just show success message
+                # In the future: save image to config entry
+                return self.async_abort(reason="image_uploaded")
+
+            schema = self._build_background_images_schema()
+            return self.async_show_form(
+                step_id="manage_background_images",
+                data_schema=schema,
+            )
+        except Exception as err:
+            _LOGGER.error(f"Error in async_step_manage_background_images: {err}", exc_info=True)
+            return self.async_abort(reason="invalid_format")
+
+    def _build_background_images_schema(self) -> vol.Schema:
+        """Build schema for background image management."""
+        return vol.Schema(
+            {
+                vol.Required("image_file"): selector.FileSelector(
+                    selector.FileSelectorConfig(accept=".jpg,.jpeg,.png,.gif")
+                ),
+                vol.Required("image_name"): selector.TextSelector(),
+            }
+        )

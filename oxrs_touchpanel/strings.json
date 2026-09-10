@@ -27,7 +27,8 @@
         "title": "OXRS Touch Panel",
         "menu_options": {
           "add_tile": "Add a tile",
-          "remove_tile": "Remove a tile"
+          "remove_tile": "Remove a tile",
+          "manage_background_images": "Manage background images"
         }
       },
       "add_tile": {
@@ -60,6 +61,14 @@
       }
     },
     "abort": {
+      "manage_background_images": {
+        "title": "Manage background images",
+        "description": "Upload, view, and manage background images for tiles.",
+        "data": {
+          "image_file": "Image file (JPG, PNG, GIF)",
+          "image_name": "Image name"
+        }
+      },
       "no_tiles": "There are no tiles to remove.",
       "screen_full": "That screen has no free tile positions. Choose another screen or remove a tile first.",
       "invalid_tile_style": "Please select a valid tile style.",

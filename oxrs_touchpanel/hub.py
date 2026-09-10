@@ -38,7 +38,7 @@ from .const import (
     topic_tele,
 )
 from .models import OxrsTile
-from .tiles import TILE_TYPES
+from .background_images import BackgroundImageManager
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -81,6 +81,8 @@ class OxrsPanel:
         self.esp32_temp: float | None = None
         self._pushed_screens: set[int] = set()
         self._unsubs: list = []
+        # Initialize background image manager
+        self.background_images = BackgroundImageManager(hass, entry.options)
 
     @property
     def tiles(self) -> list[dict[str, Any]]:
