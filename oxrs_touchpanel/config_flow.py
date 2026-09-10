@@ -451,19 +451,52 @@ class OxrsOptionsFlow(OptionsFlow):
         try:
             if user_input is not None:
                 image_file = user_input.get("image_file")
-                image_name = user_input.get("image_name", "Untitled")
+                image_name = user_input.get("image_name", "").strip()
                 
-                if not image_file or not image_name:
+                if not image_file:
                     return self.async_show_form(
                         step_id="manage_background_images",
                         data_schema=self._build_background_images_schema(),
-                        errors={"base": "invalid_image"},
+                        errors={"base": "no_file"},
                     )
                 
-                _LOGGER.info(f"Background image management: {image_name}")
-                # For now, just show success message
-                # In the future: save image to config entry
-                return self.async_abort(reason="image_uploaded")
+                if not image_name:
+                    return self.async_show_form(
+                        step_id="manage_background_images",
+                        data_schema=self._build_background_images_schema(),
+                        errors={"base": "no_name"},
+                    )
+                
+                # Get the hub/panel object to access background_images manager
+                entry = self.hass.data[DOMAIN].get(self._current_entry_id) if hasattr(self, "_current_entry_id") else None
+                if not entry or not hasattr(entry, "background_images"):
+                    _LOGGER.error("Cannot access background image manager")
+                    return self.async_abort(reason="invalid_format")
+                
+                # Read and process the image file
+                try:
+                    image_path = image_file[0] if isinstance(image_file, list) else image_file
+                    success, message = await entry.background_images.add_image_from_file(
+                        image_path, image_name
+                    )
+                    
+                    if success:
+                        _LOGGER.info(f"Background image uploaded: {message}")
+                        return self.async_abort(reason="image_uploaded")
+                    else:
+                        return self.async_show_form(
+                            step_id="manage_background_images",
+                            data_schema=self._build_background_images_schema(),
+                            errors={"base": "image_error"},
+                            description_placeholders={"error": message},
+                        )
+                except Exception as err:
+                    _LOGGER.error(f"Error processing image file: {err}", exc_info=True)
+                    return self.async_show_form(
+                        step_id="manage_background_images",
+                        data_schema=self._build_background_images_schema(),
+                        errors={"base": "file_error"},
+                    )
 
             schema = self._build_background_images_schema()
             return self.async_show_form(
@@ -481,6 +514,8 @@ class OxrsOptionsFlow(OptionsFlow):
                 vol.Required("image_file"): selector.FileSelector(
                     selector.FileSelectorConfig(accept=".jpg,.jpeg,.png,.gif")
                 ),
-                vol.Required("image_name"): selector.TextSelector(),
+                vol.Required("image_name"): selector.TextSelector(
+                    selector.TextSelectorConfig(placeholder="Living Room Background")
+                ),
             }
         )

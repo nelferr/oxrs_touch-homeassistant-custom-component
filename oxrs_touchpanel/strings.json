@@ -63,10 +63,10 @@
     "abort": {
       "manage_background_images": {
         "title": "Manage background images",
-        "description": "Upload, view, and manage background images for tiles.",
+        "description": "Upload, view, and manage background images for tiles. Supported formats: JPG, PNG, GIF (max 500KB).",
         "data": {
           "image_file": "Image file (JPG, PNG, GIF)",
-          "image_name": "Image name"
+          "image_name": "Image name (display label)"
         }
       },
       "no_tiles": "There are no tiles to remove.",
@@ -75,7 +75,12 @@
       "invalid_actions": "Error creating flexible tile. Check the logs for details.",
       "invalid_format": "Error selecting tile format. Check the logs for details.",
       "invalid_type": "Error selecting tile type. Check the logs for details.",
-      "invalid_details": "Error setting tile details. Check the logs for details."
+      "invalid_details": "Error setting tile details. Check the logs for details.",
+      "no_file": "Please select an image file.",
+      "no_name": "Please enter an image name.",
+      "image_error": "Error processing image. Check file format and size (max 500KB).",
+      "file_error": "Error reading file. Please try again.",
+      "image_uploaded": "Background image uploaded successfully!"
     }
   }
 }

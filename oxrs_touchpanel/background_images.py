@@ -2,14 +2,22 @@
 
 This module handles:
 - Storing background images in Home Assistant config
-- Loading and validating images
-- Applying backgrounds to tile configurations
-- Managing image lifecycle
+- Loading and validating images (JPG, PNG, GIF)
+- Applying backgrounds to tile configurations via MQTT
+- Managing image lifecycle (add, delete, list, apply)
+
+OXRS Implementation Notes:
+- Background images sent via cmnd/<device-client-id> topic
+- Images encoded as base64 in JSON payload
+- Field: "backgroundImage" with base64 data
+- All tiles support background images
+- Can combine with level display, text, and colors for rich UX
 """
 
 from __future__ import annotations
 
 import base64
+import hashlib
 import logging
 from pathlib import Path
 from typing import Any
@@ -26,11 +34,25 @@ BACKGROUND_IMAGES_KEY = "background_images"
 CONFIG_IMAGE_ID = "image_id"
 CONFIG_IMAGE_NAME = "image_name"
 CONFIG_IMAGE_DATA = "image_data"  # Base64 encoded image
-CONFIG_IMAGE_FORMAT = "image_format"  # jpg, png, etc
+CONFIG_IMAGE_FORMAT = "image_format"  # jpg, png, gif
+CONFIG_IMAGE_SIZE = "image_size"  # File size in bytes
+
+# Supported image formats
+SUPPORTED_FORMATS = {"jpg", "jpeg", "png", "gif"}
+MAX_IMAGE_SIZE = 500000  # 500KB max per image
 
 
 class BackgroundImageManager:
-    """Manage background images for tiles."""
+    """Manage background images for OXRS tiles.
+    
+    Handles:
+    - Reading image files from disk (JPG, PNG, GIF)
+    - Validating image format and size
+    - Encoding images to base64 for storage
+    - Storing in Home Assistant config entry
+    - Building OXRS MQTT payloads for tiles
+    - Listing and deleting images
+    """
 
     def __init__(self, hass: HomeAssistant, config_entry_data: dict[str, Any]):
         """Initialize background image manager.
@@ -42,6 +64,56 @@ class BackgroundImageManager:
         self.hass = hass
         self.config_entry_data = config_entry_data
         self._images: dict[str, dict[str, Any]] = config_entry_data.get(BACKGROUND_IMAGES_KEY, {})
+
+    async def add_image_from_file(
+        self, file_path: str, image_name: str
+    ) -> tuple[bool, str]:
+        """Add a background image from a file path.
+        
+        Args:
+            file_path: Path to image file (JPG, PNG, GIF)
+            image_name: Display name for the image
+            
+        Returns:
+            Tuple of (success, message)
+        """
+        try:
+            # Read file
+            path = Path(file_path)
+            if not path.exists():
+                return False, f"File not found: {file_path}"
+            
+            # Check file extension
+            suffix = path.suffix.lower().lstrip(".")
+            if suffix not in SUPPORTED_FORMATS:
+                return False, f"Unsupported format: {suffix}. Supported: {', '.join(SUPPORTED_FORMATS)}"
+            
+            # Read and validate size
+            image_data = path.read_bytes()
+            file_size = len(image_data)
+            
+            if file_size == 0:
+                return False, "File is empty"
+            
+            if file_size > MAX_IMAGE_SIZE:
+                return False, f"File too large: {file_size} bytes (max: {MAX_IMAGE_SIZE})"
+            
+            # Generate image ID from file hash (deterministic, prevents duplicates)
+            image_id = hashlib.md5(image_data).hexdigest()[:12]
+            
+            # Add the image
+            success = await self.add_image(
+                image_id, image_name, image_data, suffix
+            )
+            
+            if success:
+                return True, f"Image added: {image_name} ({file_size} bytes)"
+            else:
+                return False, "Failed to add image to storage"
+                
+        except Exception as err:
+            _LOGGER.error(f"Error reading image file {file_path}: {err}", exc_info=True)
+            return False, f"Error reading file: {str(err)}"
 
     async def add_image(
         self, image_id: str, image_name: str, image_data: bytes, image_format: str = "jpg"
@@ -58,6 +130,16 @@ class BackgroundImageManager:
             True if image was added successfully
         """
         try:
+            # Validate format
+            if image_format.lower() not in SUPPORTED_FORMATS:
+                _LOGGER.warning(f"Unsupported image format: {image_format}")
+                return False
+            
+            # Validate size
+            if len(image_data) > MAX_IMAGE_SIZE:
+                _LOGGER.warning(f"Image too large: {len(image_data)} bytes")
+                return False
+            
             # Encode image to base64 for storage
             b64_data = base64.b64encode(image_data).decode("utf-8")
             
@@ -65,16 +147,17 @@ class BackgroundImageManager:
                 CONFIG_IMAGE_ID: image_id,
                 CONFIG_IMAGE_NAME: image_name,
                 CONFIG_IMAGE_DATA: b64_data,
-                CONFIG_IMAGE_FORMAT: image_format,
+                CONFIG_IMAGE_FORMAT: image_format.lower(),
+                CONFIG_IMAGE_SIZE: len(image_data),
             }
             
             # Update config entry data
             self.config_entry_data[BACKGROUND_IMAGES_KEY] = self._images
             
-            _LOGGER.info(f"Added background image: {image_id} ({image_name})")
+            _LOGGER.info(f"Added background image: {image_id} ({image_name}, {len(image_data)} bytes)")
             return True
         except Exception as err:
-            _LOGGER.error(f"Error adding background image {image_id}: {err}")
+            _LOGGER.error(f"Error adding background image {image_id}: {err}", exc_info=True)
             return False
 
     def get_image(self, image_id: str) -> dict[str, Any] | None:
@@ -142,6 +225,9 @@ class BackgroundImageManager:
     def apply_to_tile(self, tile_config: dict[str, Any], image_id: str) -> bool:
         """Apply background image to tile configuration.
         
+        Stores reference to image in tile config for later MQTT transmission.
+        The actual base64 data is sent via OXRS cmnd/ payload when tile updates.
+        
         Args:
             tile_config: Tile configuration dict
             image_id: Background image ID to apply
@@ -165,3 +251,81 @@ class BackgroundImageManager:
         """
         if "background_image_id" in tile_config:
             del tile_config["background_image_id"]
+
+    def build_oxrs_tile_payload(
+        self, screen: int, tile: int, image_id: str
+    ) -> dict[str, Any] | None:
+        """Build OXRS MQTT payload for tile background image.
+        
+        Used for cmnd/<device-client-id> to send background image to OXRS panel.
+        
+        OXRS Firmware Behavior:
+        - Sends base64-encoded image in JSON payload
+        - Field: "backgroundImage" with base64 string
+        - Panel displays image as tile background
+        - Can combine with other elements: text, icon color, level display
+        - If tile had an icon, it's overlaid on the background
+        
+        Args:
+            screen: Screen number (1-based)
+            tile: Tile number (1-based)
+            image_id: Background image ID
+            
+        Returns:
+            OXRS MQTT payload dict, or None if image not found
+            
+        Example payload:
+        {
+            "tiles": [
+                {
+                    "screen": 1,
+                    "tile": 1,
+                    "backgroundImage": "iVBORw0KGgo..."  // base64 PNG data
+                }
+            ]
+        }
+        """
+        image = self.get_image(image_id)
+        if not image:
+            _LOGGER.warning(f"Cannot build payload: image not found: {image_id}")
+            return None
+        
+        try:
+            b64_data = image.get(CONFIG_IMAGE_DATA, "")
+            
+            return {
+                "tiles": [
+                    {
+                        "screen": screen,
+                        "tile": tile,
+                        "backgroundImage": b64_data,
+                    }
+                ]
+            }
+        except Exception as err:
+            _LOGGER.error(f"Error building OXRS payload for {image_id}: {err}")
+            return None
+
+    def remove_oxrs_tile_background(
+        self, screen: int, tile: int
+    ) -> dict[str, Any]:
+        """Build OXRS MQTT payload to remove background image from tile.
+        
+        Removes the background image but keeps icon/other elements.
+        
+        Args:
+            screen: Screen number (1-based)
+            tile: Tile number (1-based)
+            
+        Returns:
+            OXRS MQTT payload dict
+        """
+        return {
+            "tiles": [
+                {
+                    "screen": screen,
+                    "tile": tile,
+                    "backgroundImage": "",  # Empty string removes background
+                }
+            ]
+        }
