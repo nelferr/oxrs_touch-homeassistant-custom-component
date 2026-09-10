@@ -39,6 +39,7 @@ from .const import (
 )
 from .models import OxrsTile
 from .background_images import BackgroundImageManager
+from .tiles import TILE_TYPES
 
 _LOGGER = logging.getLogger(__name__)
 
