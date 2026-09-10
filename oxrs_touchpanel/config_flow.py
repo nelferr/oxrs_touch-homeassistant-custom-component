@@ -328,10 +328,7 @@ class OxrsOptionsFlow(OptionsFlow):
                         )
                     ),
                     vol.Required(CONF_ENTITY_ID): selector.EntitySelector(
-                        selector.EntitySelectorConfig(
-                            domain=definition["domain"],
-                            filter=self._get_entity_filter_for_tile_type(self._new_type)
-                        )
+                        selector.EntitySelectorConfig(domain=definition["domain"])
                     ),
                     vol.Optional(CONF_LABEL, default=""): selector.TextSelector(),
                     vol.Optional(
@@ -579,8 +576,6 @@ class OxrsOptionsFlow(OptionsFlow):
                 vol.Required("image_file"): selector.FileSelector(
                     selector.FileSelectorConfig(accept=".jpg,.jpeg,.png,.gif")
                 ),
-                vol.Required("image_name"): selector.TextSelector(
-                    selector.TextSelectorConfig(placeholder="Living Room Background")
-                ),
+                vol.Required("image_name"): selector.TextSelector(),
             }
         )
