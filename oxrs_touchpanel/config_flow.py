@@ -515,54 +515,97 @@ class OxrsOptionsFlow(OptionsFlow):
             if user_input is not None:
                 image_file = user_input.get("image_file")
                 image_name = user_input.get("image_name", "").strip()
-                
+
+                _LOGGER.debug(
+                    f"manage_background_images: image_file type={type(image_file)}, "
+                    f"image_name={image_name!r}, "
+                    f"value_preview={str(image_file)[:80] if image_file else None}"
+                )
+
                 if not image_file:
                     return self.async_show_form(
                         step_id="manage_background_images",
                         data_schema=self._build_background_images_schema(),
                         errors={"base": "no_file"},
                     )
-                
+
                 if not image_name:
                     return self.async_show_form(
                         step_id="manage_background_images",
                         data_schema=self._build_background_images_schema(),
                         errors={"base": "no_name"},
                     )
-                
-                # Get the panel object from the entry
+
+                # HA FileSelector returns a data URI: "data:<mime>;base64,<data>"
+                # Extract the base64 part and format for OXRS
                 try:
-                    entry_id = self._entry.entry_id
-                    panel = self.hass.data.get(DOMAIN, {}).get(entry_id)
-                    
-                    if not panel or not hasattr(panel, "background_images"):
-                        _LOGGER.error(f"Cannot access panel for entry {entry_id}")
-                        return self.async_abort(reason="invalid_format")
-                    
-                    # Read and process the image file
-                    image_path = image_file[0] if isinstance(image_file, list) else image_file
-                    
-                    # Verify file exists
-                    from pathlib import Path
-                    if not Path(image_path).exists():
-                        _LOGGER.error(f"Image file not found: {image_path}")
+                    import re
+                    data_uri = image_file[0] if isinstance(image_file, list) else image_file
+
+                    # Parse the data URI
+                    match = re.match(
+                        r"data:image/(?P<fmt>jpeg|jpg|png|gif);base64,(?P<data>.+)",
+                        data_uri,
+                        re.DOTALL,
+                    )
+                    if not match:
+                        _LOGGER.error(
+                            f"Unexpected image_file format: {str(data_uri)[:100]}"
+                        )
                         return self.async_show_form(
                             step_id="manage_background_images",
                             data_schema=self._build_background_images_schema(),
-                            errors={"base": "file_error"},
-                            description_placeholders={"error": f"File not found: {image_path}"},
+                            errors={"base": "image_error"},
                         )
-                    
-                    success, message = await panel.background_images.add_image_from_file(
-                        image_path, image_name
+
+                    image_format = match.group("fmt").replace("jpeg", "jpg")
+                    b64_data = match.group("data").strip()
+
+                    # Validate size — OXRS crashes if encoded image > 4KB
+                    if len(b64_data) > 5500:  # ~4KB binary ≈ ~5.5KB base64
+                        _LOGGER.warning(
+                            f"Image too large: {len(b64_data)} base64 chars "
+                            f"(OXRS limit ~4KB / ~5.5KB base64)"
+                        )
+                        return self.async_show_form(
+                            step_id="manage_background_images",
+                            data_schema=self._build_background_images_schema(),
+                            errors={"base": "image_error"},
+                        )
+
+                    # Generate stable ID from content hash
+                    import hashlib
+                    image_id = hashlib.md5(b64_data.encode()).hexdigest()[:12]
+
+                    # Get the panel to store the image
+                    entry_id = self._entry.entry_id
+                    panel = self.hass.data.get(DOMAIN, {}).get(entry_id)
+
+                    if not panel or not hasattr(panel, "background_images"):
+                        _LOGGER.error(f"Cannot access panel for entry {entry_id}")
+                        return self.async_abort(reason="invalid_format")
+
+                    # Store as raw bytes (decode from base64)
+                    import base64 as b64mod
+                    image_bytes = b64mod.b64decode(b64_data)
+
+                    success = await panel.background_images.add_image(
+                        image_id, image_name, image_bytes, image_format
                     )
-                    
+
                     if success:
-                        _LOGGER.info(f"Background image uploaded: {message}")
-                        # Update the config entry with new images data
+                        _LOGGER.info(
+                            f"Background image stored: {image_name!r} "
+                            f"({image_format}, {len(image_bytes)} bytes)"
+                        )
+                        # Persist to config entry
+                        new_options = dict(self._entry.options)
+                        from .const import CONF_BACKGROUND_IMAGES
+                        new_options[CONF_BACKGROUND_IMAGES] = (
+                            panel.background_images._images
+                        )
                         self.hass.config_entries.async_update_entry(
-                            self._entry,
-                            options=panel.background_images.config_entry_data
+                            self._entry, options=new_options
                         )
                         return self.async_abort(reason="image_uploaded")
                     else:
@@ -570,10 +613,12 @@ class OxrsOptionsFlow(OptionsFlow):
                             step_id="manage_background_images",
                             data_schema=self._build_background_images_schema(),
                             errors={"base": "image_error"},
-                            description_placeholders={"error": message},
                         )
+
                 except Exception as err:
-                    _LOGGER.error(f"Error processing image file: {err}", exc_info=True)
+                    _LOGGER.error(
+                        f"Error processing image data URI: {err}", exc_info=True
+                    )
                     return self.async_show_form(
                         step_id="manage_background_images",
                         data_schema=self._build_background_images_schema(),
@@ -586,7 +631,9 @@ class OxrsOptionsFlow(OptionsFlow):
                 data_schema=schema,
             )
         except Exception as err:
-            _LOGGER.error(f"Error in async_step_manage_background_images: {err}", exc_info=True)
+            _LOGGER.error(
+                f"Error in async_step_manage_background_images: {err}", exc_info=True
+            )
             return self.async_abort(reason="invalid_format")
 
     def _build_background_images_schema(self) -> vol.Schema:

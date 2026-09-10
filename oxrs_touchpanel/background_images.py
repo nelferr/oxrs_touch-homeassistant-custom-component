@@ -39,7 +39,7 @@ CONFIG_IMAGE_SIZE = "image_size"  # File size in bytes
 
 # Supported image formats
 SUPPORTED_FORMATS = {"jpg", "jpeg", "png", "gif"}
-MAX_IMAGE_SIZE = 500000  # 500KB max per image
+MAX_IMAGE_SIZE = 4096  # OXRS firmware crashes if image > ~4KB
 
 
 class BackgroundImageManager:

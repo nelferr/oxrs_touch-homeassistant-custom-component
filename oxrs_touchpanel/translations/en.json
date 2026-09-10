@@ -27,14 +27,21 @@
         "title": "OXRS Touch Panel",
         "menu_options": {
           "add_tile": "Add a tile",
-          "remove_tile": "Remove a tile"
+          "remove_tile": "Remove a tile",
+          "manage_background_images": "Manage background images"
         }
       },
       "add_tile": {
-        "title": "Add a tile — type & screen",
+        "title": "Add a tile",
+        "description": "Choose which screen to add the tile to.",
         "data": {
-          "type": "Tile type",
           "screen": "Screen number"
+        }
+      },
+      "add_tile_type": {
+        "title": "Add a tile — choose type (screen {screen})",
+        "data": {
+          "tile_type": "Tile type"
         }
       },
       "add_tile_details": {
@@ -46,6 +53,21 @@
           "icon": "Icon"
         }
       },
+      "add_tile_background": {
+        "title": "Add background image (optional)",
+        "description": "Select a background image for this tile. {images_available} for {tile}.",
+        "data": {
+          "background_image_name": "Background image"
+        }
+      },
+      "manage_background_images": {
+        "title": "Manage background images",
+        "description": "Upload a background image for tiles. Images must be under 4KB (use the OXRS Asset Generator to resize). Supported formats: JPG, PNG, GIF.",
+        "data": {
+          "image_file": "Image file (JPG, PNG, GIF — max 4KB)",
+          "image_name": "Image name"
+        }
+      },
       "remove_tile": {
         "title": "Remove a tile",
         "data": {
@@ -55,7 +77,17 @@
     },
     "abort": {
       "no_tiles": "There are no tiles to remove.",
-      "screen_full": "That screen has no free tile positions. Choose another screen or remove a tile first."
+      "screen_full": "That screen has no free tile positions. Choose another screen or remove a tile first.",
+      "invalid_tile_style": "Please select a valid tile style.",
+      "invalid_actions": "Error creating flexible tile. Check the logs for details.",
+      "invalid_format": "Error selecting tile format. Check the logs for details.",
+      "invalid_type": "Error selecting tile type. Check the logs for details.",
+      "invalid_details": "Error setting tile details. Check the logs for details.",
+      "no_file": "Please select an image file.",
+      "no_name": "Please enter an image name.",
+      "image_error": "Error processing image. Ensure it is under 4KB. Use https://oxrs.io/tools/asset-generator.html to resize.",
+      "file_error": "Error reading image data. Please try again.",
+      "image_uploaded": "Background image saved successfully!"
     }
   }
 }
