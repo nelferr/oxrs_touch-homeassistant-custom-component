@@ -537,7 +537,7 @@ class OxrsOptionsFlow(OptionsFlow):
 
                 # Validate base64
                 try:
-                    image_bytes = _b64.b64decode(image_base64, validate=True)
+                    image_bytes = _b64.b64decode(image_base64)
                 except Exception:
                     return self.async_show_form(
                         step_id="manage_background_images",
@@ -565,9 +565,9 @@ class OxrsOptionsFlow(OptionsFlow):
                     )
 
                 # Detect format from magic bytes
-                if image_bytes[:4] == b"\x89PNG":
+                if image_bytes[:4] == bytes([0x89, 0x50, 0x4e, 0x47]):
                     fmt = "png"
-                elif image_bytes[:2] == b"\xff\xd8":
+                elif image_bytes[:2] == bytes([0xff, 0xd8]):
                     fmt = "jpg"
                 elif image_bytes[:3] == b"GIF":
                     fmt = "gif"
