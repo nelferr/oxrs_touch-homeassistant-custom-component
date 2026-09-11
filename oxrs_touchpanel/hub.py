@@ -68,6 +68,25 @@ def _find_tile_type_for_domain(domain: str, tile_types: dict[str, Any]) -> str |
     return None
 
 
+def _inject_background(state: dict[str, Any], tile: dict[str, Any]) -> None:
+    """Inject backgroundImage reference into a tile cmnd state payload.
+
+    OXRS two-step process (Step 2):
+    After addImage has been sent, tile payloads reference the image by name.
+
+    Args:
+        state: Tile state payload dict (modified in-place)
+        tile:  Tile config dict (may contain background_image_name)
+    """
+    image_name = tile.get("background_image_name")
+    if image_name:
+        state["backgroundImage"] = {"name": image_name}
+        _LOGGER.debug(
+            f"Injected backgroundImage '{image_name}' into tile "
+            f"S{state.get('screen')}/T{state.get('tile')}"
+        )
+
+
 class OxrsPanel:
     """Represents a single OXRS Touch Panel (one MQTT client id)."""
 
@@ -280,16 +299,18 @@ class OxrsPanel:
                             temp_tile = {**tile, CONF_ENTITY_ID: action_entity}
                             state = handler["build_state"](self.hass, temp_tile)
                             if state is not None:
+                                _inject_background(state, tile)
                                 payload_tiles.append(state)
                 continue
             
-            # Process old format tiles with entity bindings
+            # Process hardcoded tiles with entity bindings
             tile_type = tile.get(CONF_TYPE)
             handler = TILE_TYPES.get(tile_type)
             if handler is None:
                 continue
             state = handler["build_state"](self.hass, tile)
             if state is not None:
+                _inject_background(state, tile)
                 payload_tiles.append(state)
         
         if payload_tiles:

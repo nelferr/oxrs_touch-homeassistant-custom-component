@@ -375,7 +375,9 @@ class OxrsOptionsFlow(OptionsFlow):
                     _LOGGER.info(f"Added background image '{background_image_name}' to tile")
                 
                 _LOGGER.info(f"Tile created at screen {self._new_screen}/position {self._new_tile_config[CONF_TILE]}")
-                return self.async_create_entry(title="", data={CONF_TILES: self._tiles})
+                new_options = dict(self._entry.options)
+                new_options[CONF_TILES] = self._tiles
+                return self.async_create_entry(title="", data=new_options)
             
             # Get background image options from manager
             hub = self.hass.data.get(DOMAIN, {})
@@ -483,7 +485,9 @@ class OxrsOptionsFlow(OptionsFlow):
             return self.async_abort(reason="no_tiles")
         if user_input is not None:
             del self._tiles[int(user_input["index"])]
-            return self.async_create_entry(title="", data={CONF_TILES: self._tiles})
+            new_options = dict(self._entry.options)
+            new_options[CONF_TILES] = self._tiles
+            return self.async_create_entry(title="", data=new_options)
 
         options = [
             {
