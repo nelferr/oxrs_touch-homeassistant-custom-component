@@ -74,6 +74,9 @@ def _inject_background(state: dict[str, Any], tile: dict[str, Any]) -> None:
     OXRS two-step process (Step 2):
     After addImage has been sent, tile payloads reference the image by name.
 
+    Per OXRS docs: if a tile previously had an icon, clear it by sending
+    "text": "" alongside the backgroundImage payload.
+
     Args:
         state: Tile state payload dict (modified in-place)
         tile:  Tile config dict (may contain background_image_name)
@@ -81,9 +84,10 @@ def _inject_background(state: dict[str, Any], tile: dict[str, Any]) -> None:
     image_name = tile.get("background_image_name")
     if image_name:
         state["backgroundImage"] = {"name": image_name}
+        state["text"] = ""   # clear icon so background is visible
         _LOGGER.debug(
-            f"Injected backgroundImage '{image_name}' into tile "
-            f"S{state.get('screen')}/T{state.get('tile')}"
+            f"Injected backgroundImage '{image_name}' + cleared icon "
+            f"for S{state.get('screen')}/T{state.get('tile')}"
         )
 
 
@@ -138,9 +142,8 @@ class OxrsPanel:
         )
         self._track_entities()
         # Push config now in case the panel is already online.
+        # async_push_config handles: conf/ → addImage → seed_state
         await self.async_push_config()
-        # Send all background images to panel (Step 1: addImage commands)
-        await self.async_push_images_to_panel()
 
     def _track_entities(self) -> None:
         """Track entity changes for tiles with entity bindings (old and new format)."""
@@ -276,6 +279,9 @@ class OxrsPanel:
         )
         # Let the panel apply the config before seeding tile states.
         await asyncio.sleep(1)
+        # Step 1: register background images in panel memory before tiles reference them
+        await self.async_push_images_to_panel()
+        # Step 2: seed tile states (includes backgroundImage.name references)
         await self.async_seed_state()
 
     async def async_seed_state(self) -> None:
