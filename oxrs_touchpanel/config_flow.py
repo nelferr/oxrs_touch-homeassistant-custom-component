@@ -535,20 +535,27 @@ class OxrsOptionsFlow(OptionsFlow):
                 if m:
                     image_base64 = m.group(1).strip()
 
-                # Validate base64
+                # Validate base64 — lenient decode, whitespace already stripped
                 try:
                     image_bytes = _b64.b64decode(image_base64)
-                except Exception:
+                except Exception as decode_err:
+                    _LOGGER.error(f"Base64 decode failed: {decode_err}")
                     return self.async_show_form(
                         step_id="manage_background_images",
                         data_schema=self._build_background_images_schema(),
                         errors={"base": "image_error"},
                     )
 
-                # OXRS firmware crashes on images > 4 KB
-                if len(image_bytes) > 4096:
+                _LOGGER.debug(
+                    f"Image input: base64_len={len(image_base64)} chars, "
+                    f"decoded={len(image_bytes)} bytes"
+                )
+
+                # OXRS docs: "encoded image should not exceed 4KB" = the base64 string
+                if len(image_base64) > 4096:
                     _LOGGER.warning(
-                        f"Image too large: {len(image_bytes)} bytes (OXRS limit 4 KB)"
+                        f"Base64 string too large: {len(image_base64)} chars "
+                        f"(OXRS limit ~4KB). Use https://oxrs.io/tools/asset-generator.html"
                     )
                     return self.async_show_form(
                         step_id="manage_background_images",
@@ -577,14 +584,23 @@ class OxrsOptionsFlow(OptionsFlow):
                 image_id = _hl.md5(image_base64.encode()).hexdigest()[:12]
 
                 entry_id = self._entry.entry_id
+                _LOGGER.debug(
+                    f"Looking up panel for entry_id={entry_id!r}, "
+                    f"hass.data[DOMAIN] keys={list(self.hass.data.get(DOMAIN, {}).keys())}"
+                )
                 panel = self.hass.data.get(DOMAIN, {}).get(entry_id)
                 if not panel or not hasattr(panel, "background_images"):
-                    _LOGGER.error(f"Cannot access panel for entry {entry_id}")
+                    _LOGGER.error(
+                        f"Cannot access panel for entry {entry_id}. "
+                        f"panel={panel}, has background_images={hasattr(panel, 'background_images') if panel else 'N/A'}"
+                    )
                     return self.async_abort(reason="invalid_format")
 
+                _LOGGER.debug(f"Calling add_image: id={image_id}, name={image_name!r}, fmt={fmt}, size={len(image_bytes)}")
                 success = await panel.background_images.add_image(
                     image_id, image_name, image_bytes, fmt
                 )
+                _LOGGER.debug(f"add_image returned: {success}")
                 if not success:
                     return self.async_show_form(
                         step_id="manage_background_images",

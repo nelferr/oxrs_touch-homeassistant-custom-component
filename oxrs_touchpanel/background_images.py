@@ -116,48 +116,49 @@ class BackgroundImageManager:
             return False, f"Error reading file: {str(err)}"
 
     async def add_image(
-        self, image_id: str, image_name: str, image_data: bytes, image_format: str = "jpg"
+        self, image_id: str, image_name: str, image_data: bytes, image_format: str = "png"
     ) -> bool:
         """Add or update a background image.
-        
+
+        Stores base64-encoded image in config entry data.
+        The caller (config_flow) is responsible for size/format validation.
+
         Args:
-            image_id: Unique identifier for the image
-            image_name: Display name for the image
-            image_data: Raw image bytes
-            image_format: Image format (jpg, png, gif, etc)
-            
+            image_id:     Stable MD5-based identifier
+            image_name:   Display name (also used as OXRS addImage name)
+            image_data:   Raw decoded image bytes
+            image_format: File format: png, jpg or gif
+
         Returns:
-            True if image was added successfully
+            True if image was stored successfully
         """
         try:
-            # Validate format
-            if image_format.lower() not in SUPPORTED_FORMATS:
-                _LOGGER.warning(f"Unsupported image format: {image_format}")
-                return False
-            
-            # Validate size
-            if len(image_data) > MAX_IMAGE_SIZE:
-                _LOGGER.warning(f"Image too large: {len(image_data)} bytes")
-                return False
-            
-            # Encode image to base64 for storage
+            _LOGGER.debug(
+                f"add_image: id={image_id!r} name={image_name!r} "
+                f"format={image_format!r} size={len(image_data)} bytes"
+            )
+
+            # Re-encode to base64 for storage (we decoded it in config_flow to check size)
             b64_data = base64.b64encode(image_data).decode("utf-8")
-            
+
             self._images[image_id] = {
-                CONFIG_IMAGE_ID: image_id,
-                CONFIG_IMAGE_NAME: image_name,
-                CONFIG_IMAGE_DATA: b64_data,
+                CONFIG_IMAGE_ID:     image_id,
+                CONFIG_IMAGE_NAME:   image_name,
+                CONFIG_IMAGE_DATA:   b64_data,
                 CONFIG_IMAGE_FORMAT: image_format.lower(),
-                CONFIG_IMAGE_SIZE: len(image_data),
+                CONFIG_IMAGE_SIZE:   len(image_data),
             }
-            
-            # Update config entry data
-            self.config_entry_data[BACKGROUND_IMAGES_KEY] = self._images
-            
-            _LOGGER.info(f"Added background image: {image_id} ({image_name}, {len(image_data)} bytes)")
+
+            _LOGGER.info(
+                f"Background image stored: '{image_name}' "
+                f"(id={image_id}, {len(image_data)} bytes, {image_format})"
+            )
             return True
+
         except Exception as err:
-            _LOGGER.error(f"Error adding background image {image_id}: {err}", exc_info=True)
+            _LOGGER.error(
+                f"Error storing background image '{image_name}': {err}", exc_info=True
+            )
             return False
 
     def get_image(self, image_id: str) -> dict[str, Any] | None:
