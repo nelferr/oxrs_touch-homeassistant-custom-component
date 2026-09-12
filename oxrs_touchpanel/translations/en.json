@@ -39,18 +39,20 @@
         }
       },
       "add_tile_type": {
-        "title": "Add a tile — choose type (screen {screen})",
+        "title": "Add a tile \u2014 choose type (screen {screen})",
         "data": {
           "tile_type": "Tile type"
         }
       },
       "add_tile_details": {
-        "title": "Add a tile — {type} (screen {screen})",
+        "title": "Add a tile \u2014 {type} (screen {screen})",
         "data": {
           "tile": "Tile position (free only)",
           "entity_id": "Bound entity",
           "label": "Label",
-          "icon": "Icon"
+          "icon": "Icon",
+          "sublabel_entity_id": "Sub-label source (optional) - shows this entity's state under the tile",
+          "indicator_secondary_entity_id": "Secondary sensor (optional, indicator tiles only) - shown alongside the primary value"
         }
       },
       "add_tile_background": {

@@ -10,5 +10,5 @@
   "issue_tracker": "https://github.com/OXRS-IO/OXRS-IO-TouchPanel-ESP32-FW/issues",
   "mqtt": ["stat/+/adopt"],
   "requirements": [],
-  "version": "1.1.0"
+  "version": "1.2.0"
 }

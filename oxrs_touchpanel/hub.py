@@ -20,8 +20,10 @@ from .const import (
     CONF_ACTIONS,
     CONF_ENTITY_ID,
     CONF_ICON,
+    CONF_INDICATOR_SECONDARY_ENTITY_ID,
     CONF_LABEL,
     CONF_SCREEN,
+    CONF_SUBLABEL_ENTITY_ID,
     CONF_TILE,
     CONF_TILES,
     CONF_TYPE,
@@ -68,21 +70,31 @@ def _find_tile_type_for_domain(domain: str, tile_types: dict[str, Any]) -> str |
     return None
 
 
-def _inject_background(state: dict[str, Any], tile: dict[str, Any]) -> None:
-    """Inject backgroundImage reference into a tile cmnd state payload.
+def _augment_tile_state(
+    hass: HomeAssistant, state: dict[str, Any], tile: dict[str, Any]
+) -> None:
+    """Apply common cross-tile-type extras to a cmnd state payload.
 
-    OXRS two-step process (Step 2):
-    After addImage has been sent, tile payloads reference the image by name.
+    Currently handles two capabilities that apply to ANY tile type:
 
-    Firmware note (verified against classTile.cpp::setIconText): sending
-    "text": "" does NOT hide the icon - it restores it. An empty string
-    reverts to the icon; only a non-empty string hides the icon and shows
-    text instead. We use a single space so the icon is hidden and no
-    visible label is drawn over the background image.
+    1. Background image (OXRS two-step process, step 2): after addImage has
+       been sent, tile payloads reference the image by name.
+
+       Firmware note (verified against classTile.cpp::setIconText): sending
+       "text": "" does NOT hide the icon - it restores it. An empty string
+       reverts to the icon; only a non-empty string hides the icon and shows
+       text instead. We use a single space so the icon is hidden and no
+       visible label is drawn over the background image.
+
+    2. subLabel sourced from a secondary entity the user picked when
+       creating the tile (e.g. "21.4°C", "on" / "off", a last-changed
+       sensor). Rendered as "<state> <unit>", trimmed.
 
     Args:
+        hass:  Home Assistant instance (needed to read the subLabel entity)
         state: Tile state payload dict (modified in-place)
-        tile:  Tile config dict (may contain background_image_name)
+        tile:  Tile config dict (may contain background_image_name /
+               sublabel_entity_id)
     """
     image_name = tile.get("background_image_name")
     if image_name:
@@ -92,6 +104,18 @@ def _inject_background(state: dict[str, Any], tile: dict[str, Any]) -> None:
             f"Injected backgroundImage '{image_name}' + hid icon "
             f"for S{state.get('screen')}/T{state.get('tile')}"
         )
+
+    sublabel_entity_id = tile.get(CONF_SUBLABEL_ENTITY_ID)
+    if sublabel_entity_id:
+        sublabel_state = hass.states.get(sublabel_entity_id)
+        if sublabel_state is not None:
+            unit = sublabel_state.attributes.get("unit_of_measurement") or ""
+            sub_label = f"{sublabel_state.state} {unit}".strip()
+            state["subLabel"] = sub_label
+            _LOGGER.debug(
+                f"Injected subLabel '{sub_label}' from {sublabel_entity_id} "
+                f"for S{state.get('screen')}/T{state.get('tile')}"
+            )
 
 
 class OxrsPanel:
@@ -165,7 +189,23 @@ class OxrsPanel:
             for t in self.tiles
             if CONF_ACTIONS in t and t.get(CONF_ACTION_ENTITY)
         ])
-        
+
+        # Common capability: subLabel source entity (any tile type)
+        entity_ids.extend([
+            t[CONF_SUBLABEL_ENTITY_ID]
+            for t in self.tiles
+            if t.get(CONF_SUBLABEL_ENTITY_ID)
+        ])
+
+        # indicator tile: optional secondary sensor
+        entity_ids.extend([
+            t[CONF_INDICATOR_SECONDARY_ENTITY_ID]
+            for t in self.tiles
+            if t.get(CONF_INDICATOR_SECONDARY_ENTITY_ID)
+        ])
+
+        entity_ids = list(dict.fromkeys(entity_ids))  # de-dupe, keep order
+
         if entity_ids:
             self._unsubs.append(
                 async_track_state_change_event(
@@ -308,7 +348,7 @@ class OxrsPanel:
                             temp_tile = {**tile, CONF_ENTITY_ID: action_entity}
                             state = handler["build_state"](self.hass, temp_tile)
                             if state is not None:
-                                _inject_background(state, tile)
+                                _augment_tile_state(self.hass, state, tile)
                                 payload_tiles.append(state)
                 continue
             
@@ -319,7 +359,7 @@ class OxrsPanel:
                 continue
             state = handler["build_state"](self.hass, tile)
             if state is not None:
-                _inject_background(state, tile)
+                _augment_tile_state(self.hass, state, tile)
                 payload_tiles.append(state)
         
         if payload_tiles:
@@ -402,9 +442,20 @@ class OxrsPanel:
         # Find tiles affected by this entity change
         tiles_to_update = []
         
-        # OLD format: tiles with CONF_ENTITY_ID + CONF_TYPE
+        # OLD format: tiles with CONF_ENTITY_ID + CONF_TYPE — match on the
+        # tile's primary entity OR either of its optional secondary entities
+        # (subLabel source / indicator secondary sensor) so those live too.
         old_format_tile = next(
-            (t for t in self.tiles if t.get(CONF_ENTITY_ID) == entity_id and CONF_TYPE in t), None
+            (
+                t for t in self.tiles
+                if CONF_TYPE in t
+                and entity_id in (
+                    t.get(CONF_ENTITY_ID),
+                    t.get(CONF_SUBLABEL_ENTITY_ID),
+                    t.get(CONF_INDICATOR_SECONDARY_ENTITY_ID),
+                )
+            ),
+            None,
         )
         if old_format_tile:
             tiles_to_update.append((old_format_tile, old_format_tile[CONF_TYPE]))
@@ -437,6 +488,7 @@ class OxrsPanel:
             
             state = handler["build_state"](self.hass, temp_tile)
             if state is not None:
+                _augment_tile_state(self.hass, state, tile)
                 self.hass.async_create_task(
                     mqtt.async_publish(
                         self.hass,
