@@ -95,8 +95,15 @@ class BackgroundImageManager:
             if file_size == 0:
                 return False, "File is empty"
             
-            if file_size > MAX_IMAGE_SIZE:
-                return False, f"File too large: {file_size} bytes (max: {MAX_IMAGE_SIZE})"
+            # OXRS firmware's 4KB limit applies to the base64-encoded string
+            # sent over MQTT, not the raw file - base64 inflates size by ~33%,
+            # so check the encoded length, matching config_flow.py's check.
+            encoded_size = len(base64.b64encode(image_data))
+            if encoded_size > MAX_IMAGE_SIZE:
+                return False, (
+                    f"Base64-encoded image too large: {encoded_size} chars "
+                    f"(max: {MAX_IMAGE_SIZE}); raw file is {file_size} bytes"
+                )
             
             # Generate image ID from file hash (deterministic, prevents duplicates)
             image_id = hashlib.md5(image_data).hexdigest()[:12]
@@ -229,6 +236,10 @@ class BackgroundImageManager:
         Stores reference to image in tile config for later MQTT transmission.
         The actual base64 data is sent via OXRS cmnd/ payload when tile updates.
         
+        Uses the "background_image_name" key, matching the convention used
+        by config_flow.py and hub.py's _inject_background - the OXRS firmware
+        references images by name, not by our internal image_id.
+        
         Args:
             tile_config: Tile configuration dict
             image_id: Background image ID to apply
@@ -236,11 +247,12 @@ class BackgroundImageManager:
         Returns:
             True if image was applied
         """
-        if not self.get_image(image_id):
+        image = self.get_image(image_id)
+        if not image:
             _LOGGER.warning(f"Background image not found: {image_id}")
             return False
         
-        tile_config["background_image_id"] = image_id
+        tile_config["background_image_name"] = image[CONFIG_IMAGE_NAME]
         _LOGGER.debug(f"Applied background image {image_id} to tile")
         return True
 
@@ -250,8 +262,8 @@ class BackgroundImageManager:
         Args:
             tile_config: Tile configuration dict
         """
-        if "background_image_id" in tile_config:
-            del tile_config["background_image_id"]
+        if "background_image_name" in tile_config:
+            del tile_config["background_image_name"]
 
     def build_oxrs_add_image_payload(self, image_id: str) -> dict[str, Any] | None:
         """Build OXRS MQTT payload to upload/store background image.

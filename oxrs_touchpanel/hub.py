@@ -74,8 +74,11 @@ def _inject_background(state: dict[str, Any], tile: dict[str, Any]) -> None:
     OXRS two-step process (Step 2):
     After addImage has been sent, tile payloads reference the image by name.
 
-    Per OXRS docs: if a tile previously had an icon, clear it by sending
-    "text": "" alongside the backgroundImage payload.
+    Firmware note (verified against classTile.cpp::setIconText): sending
+    "text": "" does NOT hide the icon - it restores it. An empty string
+    reverts to the icon; only a non-empty string hides the icon and shows
+    text instead. We use a single space so the icon is hidden and no
+    visible label is drawn over the background image.
 
     Args:
         state: Tile state payload dict (modified in-place)
@@ -84,9 +87,9 @@ def _inject_background(state: dict[str, Any], tile: dict[str, Any]) -> None:
     image_name = tile.get("background_image_name")
     if image_name:
         state["backgroundImage"] = {"name": image_name}
-        state["text"] = ""   # clear icon so background is visible
+        state["text"] = " "   # non-empty text hides the icon (see note above)
         _LOGGER.debug(
-            f"Injected backgroundImage '{image_name}' + cleared icon "
+            f"Injected backgroundImage '{image_name}' + hid icon "
             f"for S{state.get('screen')}/T{state.get('tile')}"
         )
 
