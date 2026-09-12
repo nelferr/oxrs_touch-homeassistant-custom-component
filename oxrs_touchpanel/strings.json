@@ -27,7 +27,8 @@
         "title": "OXRS Touch Panel",
         "menu_options": {
           "add_tile": "Add a tile",
-          "remove_tile": "Remove a tile"
+          "remove_tile": "Remove a tile",
+          "manage_background_images": "Manage background images"
         }
       },
       "add_tile": {
@@ -38,18 +39,42 @@
         }
       },
       "add_tile_type": {
-        "title": "Add a tile — choose type (screen {screen})",
+        "title": "Add a tile \u2014 choose type (screen {screen})",
         "data": {
-          "type": "Tile type"
+          "tile_type": "Tile type"
         }
       },
       "add_tile_details": {
-        "title": "Add a tile — {type} (screen {screen})",
+        "title": "Add a tile \u2014 {type} (screen {screen})",
         "data": {
           "tile": "Tile position (free only)",
           "entity_id": "Bound entity",
           "label": "Label",
           "icon": "Icon"
+        },
+        "data_errors": {
+          "entity_id": {
+            "entity_not_found": "Entity not found \u2014 check it exists and is loaded.",
+            "entity_not_rgbw": "This entity does not support RGBW colour. Choose a light with supported colour modes: hs and rgbw.",
+            "entity_not_cct": "This entity does not support colour temperature. Choose a light with color_temp support.",
+            "entity_not_dimmable": "This entity does not support brightness. Choose a dimmable light.",
+            "entity_not_brightness_only": "This entity supports full colour \u2014 use the RGBW or CCT tile type instead."
+          }
+        }
+      },
+      "add_tile_background": {
+        "title": "Add background image (optional)",
+        "description": "Select a background image for {tile}. {images_available}.",
+        "data": {
+          "background_image_name": "Background image"
+        }
+      },
+      "manage_background_images": {
+        "title": "Add background image",
+        "description": "Generate a base64 image string using the OXRS Asset Generator at https://oxrs.io/tools/asset-generator.html then paste the imageBase64 value below. Images must be under 4 KB and names cannot start with an underscore.",
+        "data": {
+          "image_name": "Image name (used to reference this image on tiles)",
+          "image_base64": "Base64 image string (paste from OXRS Asset Generator)"
         }
       },
       "remove_tile": {
@@ -63,10 +88,15 @@
       "no_tiles": "There are no tiles to remove.",
       "screen_full": "That screen has no free tile positions. Choose another screen or remove a tile first.",
       "invalid_tile_style": "Please select a valid tile style.",
-      "invalid_actions": "Error creating flexible tile. Check the logs for details.",
       "invalid_format": "Error selecting tile format. Check the logs for details.",
       "invalid_type": "Error selecting tile type. Check the logs for details.",
-      "invalid_details": "Error setting tile details. Check the logs for details."
+      "invalid_details": "Error setting tile details. Check the logs for details.",
+      "no_name": "Please enter an image name.",
+      "no_file": "Please paste the base64 image string.",
+      "image_error": "Invalid base64 string. Copy the imageBase64 value from the OXRS Asset Generator output.",
+      "image_too_large": "Image is larger than 4 KB. Use the OXRS Asset Generator (https://oxrs.io/tools/asset-generator.html) to resize it first.",
+      "invalid_image_name": "Image name cannot start with an underscore.",
+      "image_uploaded": "Background image saved successfully!"
     }
   }
 }

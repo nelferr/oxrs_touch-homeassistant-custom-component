@@ -125,13 +125,14 @@ class OxrsOptionsFlow(OptionsFlow):
         )
         self._new_type: str | None = None
         self._new_screen: int = 1
+        self._new_tile_config: dict[str, Any] | None = None
         
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Show the tile-management menu."""
         return self.async_show_menu(
-            step_id="init", menu_options=["add_tile", "remove_tile"]
+            step_id="init", menu_options=["add_tile", "remove_tile", "manage_background_images"]
         )
 
     async def async_step_add_tile(
@@ -275,6 +276,49 @@ class OxrsOptionsFlow(OptionsFlow):
         
         return None
 
+    def _validate_entity_for_tile_type(
+        self, entity_id: str, tile_type: str
+    ) -> str | None:
+        """Validate that entity has the capabilities required by tile type.
+
+        Called after the user picks an entity, to catch mismatches that the
+        EntitySelector (domain-only filter) cannot catch.
+
+        Returns:
+            Error key string if invalid (shown inline on the field), or None if OK.
+        """
+        state = self.hass.states.get(entity_id)
+        if state is None:
+            return "entity_not_found"
+
+        color_modes: list[str] = state.attributes.get("supported_color_modes", [])
+        if not isinstance(color_modes, list):
+            color_modes = []
+
+        if tile_type == "rgbw":
+            # Must have both hs AND rgbw in supported_color_modes
+            if not ("hs" in color_modes and "rgbw" in color_modes):
+                return "entity_not_rgbw"
+
+        elif tile_type == "cct":
+            # Must have color_temp capability
+            if not (
+                "color_temp" in color_modes
+                or "color_temp_kelvin" in state.attributes
+                or "color_temp" in state.attributes
+            ):
+                return "entity_not_cct"
+
+        elif tile_type == "slider":
+            # Must have brightness, but NOT full colour (that belongs to rgbw/cct)
+            if "brightness" not in state.attributes:
+                return "entity_not_dimmable"
+            # Exclude full-colour lights (they should use rgbw or cct tile)
+            if "hs" in color_modes or "rgb" in color_modes or "rgbw" in color_modes:
+                return "entity_not_brightness_only"
+
+        return None  # OK
+
     async def async_step_add_tile_details(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -299,19 +343,56 @@ class OxrsOptionsFlow(OptionsFlow):
                 return self.async_abort(reason="screen_full")
 
             if user_input is not None:
-                _LOGGER.debug(f"Creating hardcoded tile with entity: {user_input[CONF_ENTITY_ID]}")
-                self._tiles.append(
-                    {
-                        CONF_SCREEN: self._new_screen,
-                        CONF_TILE: int(user_input[CONF_TILE]),
-                        CONF_TYPE: self._new_type,
-                        CONF_ENTITY_ID: user_input[CONF_ENTITY_ID],
-                        CONF_LABEL: user_input.get(CONF_LABEL, ""),
-                        CONF_ICON: user_input.get(CONF_ICON, definition["icon"]),
-                    }
-                )
-                _LOGGER.info(f"Hardcoded tile created at {self._new_screen}/{user_input[CONF_TILE]}")
-                return self.async_create_entry(title="", data={CONF_TILES: self._tiles})
+                entity_id = user_input[CONF_ENTITY_ID]
+                _LOGGER.debug(f"Creating hardcoded tile with entity: {entity_id}")
+
+                # Validate entity has the capabilities this tile type requires
+                error = self._validate_entity_for_tile_type(entity_id, self._new_type)
+                if error:
+                    return self.async_show_form(
+                        step_id="add_tile_details",
+                        data_schema=vol.Schema(
+                            {
+                                vol.Required(
+                                    CONF_TILE, default=str(free[0])
+                                ): selector.SelectSelector(
+                                    selector.SelectSelectorConfig(
+                                        options=tile_options,
+                                        mode=selector.SelectSelectorMode.DROPDOWN,
+                                    )
+                                ),
+                                vol.Required(CONF_ENTITY_ID): selector.EntitySelector(
+                                    selector.EntitySelectorConfig(domain=definition["domain"])
+                                ),
+                                vol.Optional(CONF_LABEL, default=""): selector.TextSelector(),
+                                vol.Optional(
+                                    CONF_ICON, default=definition["icon"]
+                                ): selector.SelectSelector(
+                                    selector.SelectSelectorConfig(
+                                        options=BUILTIN_ICONS,
+                                        mode=selector.SelectSelectorMode.DROPDOWN,
+                                    )
+                                ),
+                            }
+                        ),
+                        errors={CONF_ENTITY_ID: error},
+                        description_placeholders={
+                            "screen": str(self._new_screen),
+                            "type": self._new_type,
+                        },
+                    )
+
+                # Store tile details for next step (background image selection)
+                self._new_tile_config = {
+                    CONF_SCREEN: self._new_screen,
+                    CONF_TILE: int(user_input[CONF_TILE]),
+                    CONF_TYPE: self._new_type,
+                    CONF_ENTITY_ID: entity_id,
+                    CONF_LABEL: user_input.get(CONF_LABEL, ""),
+                    CONF_ICON: user_input.get(CONF_ICON, definition["icon"]),
+                }
+                # Go to background image selection step
+                return await self.async_step_add_tile_background()
 
             tile_options = [
                 {"value": str(i), "label": f"Position {i}"}
@@ -328,10 +409,7 @@ class OxrsOptionsFlow(OptionsFlow):
                         )
                     ),
                     vol.Required(CONF_ENTITY_ID): selector.EntitySelector(
-                        selector.EntitySelectorConfig(
-                            domain=definition["domain"],
-                            filter=self._get_entity_filter_for_tile_type(self._new_type)
-                        )
+                        selector.EntitySelectorConfig(domain=definition["domain"])
                     ),
                     vol.Optional(CONF_LABEL, default=""): selector.TextSelector(),
                     vol.Optional(
@@ -356,6 +434,74 @@ class OxrsOptionsFlow(OptionsFlow):
             )
         except Exception as err:
             _LOGGER.error(f"Error in async_step_add_tile_details: {err}", exc_info=True)
+            return self.async_abort(reason="invalid_details")
+
+    async def async_step_add_tile_background(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Step 3: optionally select a background image for the tile."""
+        try:
+            _LOGGER.debug(f"async_step_add_tile_background called with input: {list(user_input.keys()) if user_input else 'None'}")
+            
+            assert self._new_tile_config is not None
+            
+            if user_input is not None:
+                # Add tile to list
+                self._tiles.append(self._new_tile_config)
+                
+                # Optionally add background image (store image_name, not id)
+                background_image_name = user_input.get("background_image_name")
+                if background_image_name and background_image_name != "none":
+                    self._tiles[-1]["background_image_name"] = background_image_name
+                    _LOGGER.info(f"Added background image '{background_image_name}' to tile")
+                
+                _LOGGER.info(f"Tile created at screen {self._new_screen}/position {self._new_tile_config[CONF_TILE]}")
+                new_options = dict(self._entry.options)
+                new_options[CONF_TILES] = self._tiles
+                return self.async_create_entry(title="", data=new_options)
+            
+            # Get background image options from manager
+            hub = self.hass.data.get(DOMAIN, {})
+            background_images = []
+            
+            if hub:
+                # Try to get images from this entry's panel manager
+                entry_id = self._entry.entry_id if hasattr(self, "_entry") else None
+                if entry_id:
+                    panel = hub.get(entry_id)
+                    if panel and hasattr(panel, "background_images"):
+                        images = panel.background_images.list_images()
+                        background_images = [
+                            {"value": img["image_name"], "label": img["image_name"]}
+                            for img in images
+                        ]
+            
+            # Add "None" option to skip background image
+            image_options = [{"value": "none", "label": "No background image"}]
+            image_options.extend(background_images)
+            
+            schema = vol.Schema(
+                {
+                    vol.Optional("background_image_name", default="none"): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=image_options,
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                }
+            )
+            
+            _LOGGER.debug("Showing background image selection form")
+            return self.async_show_form(
+                step_id="add_tile_background",
+                data_schema=schema,
+                description_placeholders={
+                    "tile": f"Screen {self._new_screen}, Position {self._new_tile_config[CONF_TILE]}",
+                    "images_available": f"{len(background_images)} image(s) available",
+                },
+            )
+        except Exception as err:
+            _LOGGER.error(f"Error in async_step_add_tile_background: {err}", exc_info=True)
             return self.async_abort(reason="invalid_details")
 
     def _build_add_tile_actions_schema(self, free: list[int]) -> vol.Schema:
@@ -420,7 +566,9 @@ class OxrsOptionsFlow(OptionsFlow):
             return self.async_abort(reason="no_tiles")
         if user_input is not None:
             del self._tiles[int(user_input["index"])]
-            return self.async_create_entry(title="", data={CONF_TILES: self._tiles})
+            new_options = dict(self._entry.options)
+            new_options[CONF_TILES] = self._tiles
+            return self.async_create_entry(title="", data=new_options)
 
         options = [
             {
@@ -443,3 +591,137 @@ class OxrsOptionsFlow(OptionsFlow):
             }
         )
         return self.async_show_form(step_id="remove_tile", data_schema=schema)
+
+    async def async_step_manage_background_images(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Add a background image — paste base64 from OXRS Asset Generator."""
+        import re as _re, base64 as _b64, hashlib as _hl
+        try:
+            if user_input is not None:
+                image_name   = user_input.get("image_name",   "").strip()
+                image_base64 = user_input.get("image_base64", "").strip()
+
+                if not image_name:
+                    return self.async_show_form(
+                        step_id="manage_background_images",
+                        data_schema=self._build_background_images_schema(),
+                        errors={"base": "no_name"},
+                    )
+                if not image_base64:
+                    return self.async_show_form(
+                        step_id="manage_background_images",
+                        data_schema=self._build_background_images_schema(),
+                        errors={"base": "no_file"},
+                    )
+
+                # Strip data URI prefix if user pasted from browser
+                m = _re.match(r"data:image/[^;]+;base64,(.+)", image_base64, _re.DOTALL)
+                if m:
+                    image_base64 = m.group(1).strip()
+
+                # Validate base64 — lenient decode, whitespace already stripped
+                try:
+                    image_bytes = _b64.b64decode(image_base64)
+                except Exception as decode_err:
+                    _LOGGER.error(f"Base64 decode failed: {decode_err}")
+                    return self.async_show_form(
+                        step_id="manage_background_images",
+                        data_schema=self._build_background_images_schema(),
+                        errors={"base": "image_error"},
+                    )
+
+                _LOGGER.debug(
+                    f"Image input: base64_len={len(image_base64)} chars, "
+                    f"decoded={len(image_bytes)} bytes"
+                )
+
+                # OXRS docs: "encoded image should not exceed 4KB" = the base64 string
+                if len(image_base64) > 4096:
+                    _LOGGER.warning(
+                        f"Base64 string too large: {len(image_base64)} chars "
+                        f"(OXRS limit ~4KB). Use https://oxrs.io/tools/asset-generator.html"
+                    )
+                    return self.async_show_form(
+                        step_id="manage_background_images",
+                        data_schema=self._build_background_images_schema(),
+                        errors={"base": "image_too_large"},
+                    )
+
+                # OXRS forbids names starting with underscore
+                if image_name.startswith("_"):
+                    return self.async_show_form(
+                        step_id="manage_background_images",
+                        data_schema=self._build_background_images_schema(),
+                        errors={"base": "invalid_image_name"},
+                    )
+
+                # Detect format from magic bytes
+                if image_bytes[:4] == bytes([0x89, 0x50, 0x4e, 0x47]):
+                    fmt = "png"
+                elif image_bytes[:2] == bytes([0xff, 0xd8]):
+                    fmt = "jpg"
+                elif image_bytes[:3] == b"GIF":
+                    fmt = "gif"
+                else:
+                    fmt = "png"
+
+                image_id = _hl.md5(image_base64.encode()).hexdigest()[:12]
+
+                entry_id = self._entry.entry_id
+                _LOGGER.debug(
+                    f"Looking up panel for entry_id={entry_id!r}, "
+                    f"hass.data[DOMAIN] keys={list(self.hass.data.get(DOMAIN, {}).keys())}"
+                )
+                panel = self.hass.data.get(DOMAIN, {}).get(entry_id)
+                if not panel or not hasattr(panel, "background_images"):
+                    _LOGGER.error(
+                        f"Cannot access panel for entry {entry_id}. "
+                        f"panel={panel}, has background_images={hasattr(panel, 'background_images') if panel else 'N/A'}"
+                    )
+                    return self.async_abort(reason="invalid_format")
+
+                _LOGGER.debug(f"Calling add_image: id={image_id}, name={image_name!r}, fmt={fmt}, size={len(image_bytes)}")
+                success = await panel.background_images.add_image(
+                    image_id, image_name, image_bytes, fmt
+                )
+                _LOGGER.debug(f"add_image returned: {success}")
+                if not success:
+                    return self.async_show_form(
+                        step_id="manage_background_images",
+                        data_schema=self._build_background_images_schema(),
+                        errors={"base": "image_error"},
+                    )
+
+                from .const import CONF_BACKGROUND_IMAGES
+                new_options = dict(self._entry.options)
+                new_options[CONF_BACKGROUND_IMAGES] = panel.background_images._images
+                self.hass.config_entries.async_update_entry(
+                    self._entry, options=new_options
+                )
+                _LOGGER.info(
+                    f"Background image saved: '{image_name}' "
+                    f"(id={image_id}, {len(image_bytes)} B, {fmt})"
+                )
+                return self.async_abort(reason="image_uploaded")
+
+            return self.async_show_form(
+                step_id="manage_background_images",
+                data_schema=self._build_background_images_schema(),
+            )
+        except Exception as err:
+            _LOGGER.error(
+                f"Error in async_step_manage_background_images: {err}", exc_info=True
+            )
+            return self.async_abort(reason="invalid_format")
+
+    def _build_background_images_schema(self) -> vol.Schema:
+        """Build schema for background image management — paste base64 string."""
+        return vol.Schema(
+            {
+                vol.Required("image_name"): selector.TextSelector(),
+                vol.Required("image_base64"): selector.TextSelector(
+                    selector.TextSelectorConfig(multiline=True)
+                ),
+            }
+        )

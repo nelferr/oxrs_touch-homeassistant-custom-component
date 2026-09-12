@@ -32,6 +32,13 @@ CONF_ACTION_CONDITIONS = "conditions"
 CONF_ACTION_ENTITY = "action_entity"  # Optional entity for display/feedback
 CONF_ACTION_TILE_TYPE = "action_tile_type"  # User-chosen tile style (cct, slider, updown, etc.)
 
+# Background images
+CONF_BACKGROUND_IMAGES = "background_images"
+CONF_IMAGE_ID = "image_id"
+CONF_IMAGE_NAME = "image_name"
+CONF_IMAGE_DATA = "image_data"  # Base64 encoded image
+CONF_IMAGE_FORMAT = "image_format"  # jpg, png, gif, etc
+
 # Panel defaults (WT32S3-86V/86S are 3x3; smaller panels default to 2x3)
 DEFAULT_LAYOUT = {"horizontal": 3, "vertical": 3}
 

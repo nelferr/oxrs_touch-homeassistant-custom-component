@@ -38,6 +38,7 @@ from .const import (
     topic_tele,
 )
 from .models import OxrsTile
+from .background_images import BackgroundImageManager
 from .tiles import TILE_TYPES
 
 _LOGGER = logging.getLogger(__name__)
@@ -67,6 +68,29 @@ def _find_tile_type_for_domain(domain: str, tile_types: dict[str, Any]) -> str |
     return None
 
 
+def _inject_background(state: dict[str, Any], tile: dict[str, Any]) -> None:
+    """Inject backgroundImage reference into a tile cmnd state payload.
+
+    OXRS two-step process (Step 2):
+    After addImage has been sent, tile payloads reference the image by name.
+
+    Per OXRS docs: if a tile previously had an icon, clear it by sending
+    "text": "" alongside the backgroundImage payload.
+
+    Args:
+        state: Tile state payload dict (modified in-place)
+        tile:  Tile config dict (may contain background_image_name)
+    """
+    image_name = tile.get("background_image_name")
+    if image_name:
+        state["backgroundImage"] = {"name": image_name}
+        state["text"] = ""   # clear icon so background is visible
+        _LOGGER.debug(
+            f"Injected backgroundImage '{image_name}' + cleared icon "
+            f"for S{state.get('screen')}/T{state.get('tile')}"
+        )
+
+
 class OxrsPanel:
     """Represents a single OXRS Touch Panel (one MQTT client id)."""
 
@@ -81,6 +105,8 @@ class OxrsPanel:
         self.esp32_temp: float | None = None
         self._pushed_screens: set[int] = set()
         self._unsubs: list = []
+        # Initialize background image manager
+        self.background_images = BackgroundImageManager(hass, entry.options)
 
     @property
     def tiles(self) -> list[dict[str, Any]]:
@@ -116,6 +142,7 @@ class OxrsPanel:
         )
         self._track_entities()
         # Push config now in case the panel is already online.
+        # async_push_config handles: conf/ → addImage → seed_state
         await self.async_push_config()
 
     def _track_entities(self) -> None:
@@ -252,6 +279,9 @@ class OxrsPanel:
         )
         # Let the panel apply the config before seeding tile states.
         await asyncio.sleep(1)
+        # Step 1: register background images in panel memory before tiles reference them
+        await self.async_push_images_to_panel()
+        # Step 2: seed tile states (includes backgroundImage.name references)
         await self.async_seed_state()
 
     async def async_seed_state(self) -> None:
@@ -275,16 +305,18 @@ class OxrsPanel:
                             temp_tile = {**tile, CONF_ENTITY_ID: action_entity}
                             state = handler["build_state"](self.hass, temp_tile)
                             if state is not None:
+                                _inject_background(state, tile)
                                 payload_tiles.append(state)
                 continue
             
-            # Process old format tiles with entity bindings
+            # Process hardcoded tiles with entity bindings
             tile_type = tile.get(CONF_TYPE)
             handler = TILE_TYPES.get(tile_type)
             if handler is None:
                 continue
             state = handler["build_state"](self.hass, tile)
             if state is not None:
+                _inject_background(state, tile)
                 payload_tiles.append(state)
         
         if payload_tiles:
@@ -292,6 +324,68 @@ class OxrsPanel:
                 self.hass,
                 topic_cmnd(self.client_id),
                 json.dumps({"tiles": payload_tiles}),
+            )
+
+    async def async_push_images_to_panel(self) -> None:
+        """Send all background images to panel (Step 1: addImage commands).
+        
+        OXRS Firmware Two-Step Process:
+        1. Upload/register images using addImage command ← This method
+        2. Reference images by name in tile configuration (handled in tile state building)
+        
+        This is called during setup after config push to ensure images are available
+        before tiles try to reference them by name.
+        
+        Images are NOT persistent on the panel - they must be resent each time
+        the panel comes online. This method is called during async_setup().
+        
+        Workflow:
+        - Get all stored background images from manager
+        - Build addImage payload for each
+        - Send via cmnd/ topic with small delays between sends
+        - Panel stores images in memory by name
+        - Tiles can then reference by name
+        """
+        if not self.background_images.list_images():
+            _LOGGER.debug("No background images to send to panel")
+            return
+        
+        _LOGGER.debug("Sending background images to panel (Step 1: addImage)...")
+        
+        try:
+            for image in self.background_images.list_images():
+                image_id = image.get("image_id")
+                if not image_id:
+                    continue
+                
+                # Build addImage payload
+                payload = self.background_images.build_oxrs_add_image_payload(image_id)
+                if not payload:
+                    _LOGGER.warning(f"Failed to build addImage payload for {image_id}")
+                    continue
+                
+                # Send to panel
+                _LOGGER.debug(
+                    f"Sending image '{image.get('image_name')}' to panel "
+                    f"(format: {image.get('image_format')}, "
+                    f"size: {image.get('image_size')} bytes)"
+                )
+                
+                await mqtt.async_publish(
+                    self.hass,
+                    topic_cmnd(self.client_id),
+                    json.dumps(payload),
+                )
+                
+                # Small delay between images to avoid overwhelming panel
+                await asyncio.sleep(0.2)
+            
+            _LOGGER.info(f"Sent {len(self.background_images.list_images())} background images to panel")
+            
+        except Exception as err:
+            _LOGGER.error(
+                f"Error sending background images to panel: {err}",
+                exc_info=True
             )
 
     @callback
