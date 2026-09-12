@@ -39,27 +39,18 @@
         }
       },
       "add_tile_type": {
-        "title": "Add a tile \u2014 choose type (screen {screen})",
+        "title": "Add a tile — choose type (screen {screen})",
         "data": {
           "tile_type": "Tile type"
         }
       },
       "add_tile_details": {
-        "title": "Add a tile \u2014 {type} (screen {screen})",
+        "title": "Add a tile — {type} (screen {screen})",
         "data": {
           "tile": "Tile position (free only)",
           "entity_id": "Bound entity",
           "label": "Label",
           "icon": "Icon"
-        },
-        "data_errors": {
-          "entity_id": {
-            "entity_not_found": "Entity not found \u2014 check it exists and is loaded.",
-            "entity_not_rgbw": "This entity does not support RGBW colour. Choose a light with supported colour modes: hs and rgbw.",
-            "entity_not_cct": "This entity does not support colour temperature. Choose a light with color_temp support.",
-            "entity_not_dimmable": "This entity does not support brightness. Choose a dimmable light.",
-            "entity_not_brightness_only": "This entity supports full colour \u2014 use the RGBW or CCT tile type instead."
-          }
         }
       },
       "add_tile_background": {
