@@ -276,6 +276,49 @@ class OxrsOptionsFlow(OptionsFlow):
         
         return None
 
+    def _validate_entity_for_tile_type(
+        self, entity_id: str, tile_type: str
+    ) -> str | None:
+        """Validate that entity has the capabilities required by tile type.
+
+        Called after the user picks an entity, to catch mismatches that the
+        EntitySelector (domain-only filter) cannot catch.
+
+        Returns:
+            Error key string if invalid (shown inline on the field), or None if OK.
+        """
+        state = self.hass.states.get(entity_id)
+        if state is None:
+            return "entity_not_found"
+
+        color_modes: list[str] = state.attributes.get("supported_color_modes", [])
+        if not isinstance(color_modes, list):
+            color_modes = []
+
+        if tile_type == "rgbw":
+            # Must have both hs AND rgbw in supported_color_modes
+            if not ("hs" in color_modes and "rgbw" in color_modes):
+                return "entity_not_rgbw"
+
+        elif tile_type == "cct":
+            # Must have color_temp capability
+            if not (
+                "color_temp" in color_modes
+                or "color_temp_kelvin" in state.attributes
+                or "color_temp" in state.attributes
+            ):
+                return "entity_not_cct"
+
+        elif tile_type == "slider":
+            # Must have brightness, but NOT full colour (that belongs to rgbw/cct)
+            if "brightness" not in state.attributes:
+                return "entity_not_dimmable"
+            # Exclude full-colour lights (they should use rgbw or cct tile)
+            if "hs" in color_modes or "rgb" in color_modes or "rgbw" in color_modes:
+                return "entity_not_brightness_only"
+
+        return None  # OK
+
     async def async_step_add_tile_details(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -300,13 +343,51 @@ class OxrsOptionsFlow(OptionsFlow):
                 return self.async_abort(reason="screen_full")
 
             if user_input is not None:
-                _LOGGER.debug(f"Creating hardcoded tile with entity: {user_input[CONF_ENTITY_ID]}")
+                entity_id = user_input[CONF_ENTITY_ID]
+                _LOGGER.debug(f"Creating hardcoded tile with entity: {entity_id}")
+
+                # Validate entity has the capabilities this tile type requires
+                error = self._validate_entity_for_tile_type(entity_id, self._new_type)
+                if error:
+                    return self.async_show_form(
+                        step_id="add_tile_details",
+                        data_schema=vol.Schema(
+                            {
+                                vol.Required(
+                                    CONF_TILE, default=str(free[0])
+                                ): selector.SelectSelector(
+                                    selector.SelectSelectorConfig(
+                                        options=tile_options,
+                                        mode=selector.SelectSelectorMode.DROPDOWN,
+                                    )
+                                ),
+                                vol.Required(CONF_ENTITY_ID): selector.EntitySelector(
+                                    selector.EntitySelectorConfig(domain=definition["domain"])
+                                ),
+                                vol.Optional(CONF_LABEL, default=""): selector.TextSelector(),
+                                vol.Optional(
+                                    CONF_ICON, default=definition["icon"]
+                                ): selector.SelectSelector(
+                                    selector.SelectSelectorConfig(
+                                        options=BUILTIN_ICONS,
+                                        mode=selector.SelectSelectorMode.DROPDOWN,
+                                    )
+                                ),
+                            }
+                        ),
+                        errors={CONF_ENTITY_ID: error},
+                        description_placeholders={
+                            "screen": str(self._new_screen),
+                            "type": self._new_type,
+                        },
+                    )
+
                 # Store tile details for next step (background image selection)
                 self._new_tile_config = {
                     CONF_SCREEN: self._new_screen,
                     CONF_TILE: int(user_input[CONF_TILE]),
                     CONF_TYPE: self._new_type,
-                    CONF_ENTITY_ID: user_input[CONF_ENTITY_ID],
+                    CONF_ENTITY_ID: entity_id,
                     CONF_LABEL: user_input.get(CONF_LABEL, ""),
                     CONF_ICON: user_input.get(CONF_ICON, definition["icon"]),
                 }
