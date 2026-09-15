@@ -39,18 +39,20 @@
         }
       },
       "add_tile_type": {
-        "title": "Add a tile — choose type (screen {screen})",
+        "title": "Add a tile \u2014 choose type (screen {screen})",
         "data": {
           "tile_type": "Tile type"
         }
       },
       "add_tile_details": {
-        "title": "Add a tile — {type} (screen {screen})",
+        "title": "Add a tile \u2014 {type} (screen {screen})",
         "data": {
           "tile": "Tile position (free only)",
           "entity_id": "Bound entity",
           "label": "Label",
-          "icon": "Icon"
+          "icon": "Icon",
+          "sublabel_entity_id": "Sub-label source (optional) - shows this entity's state under the tile",
+          "indicator_secondary_entity_id": "Secondary sensor (optional, indicator tiles only) - shown alongside the primary value"
         }
       },
       "add_tile_background": {
@@ -88,6 +90,13 @@
       "image_too_large": "Image is larger than 4 KB. Use the OXRS Asset Generator (https://oxrs.io/tools/asset-generator.html) to resize it first.",
       "invalid_image_name": "Image name cannot start with an underscore.",
       "image_uploaded": "Background image saved successfully!"
+    },
+    "error": {
+      "no_name": "Please enter an image name.",
+      "no_file": "Please paste the base64 image string.",
+      "image_error": "Invalid base64 string. Copy the imageBase64 value from the OXRS Asset Generator output.",
+      "image_too_large": "Image is larger than 4 KB. Use the OXRS Asset Generator (https://oxrs.io/tools/asset-generator.html) to resize it first.",
+      "invalid_image_name": "Image name cannot start with an underscore."
     }
   }
 }

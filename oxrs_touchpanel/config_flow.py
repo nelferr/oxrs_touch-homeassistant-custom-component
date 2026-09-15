@@ -23,9 +23,11 @@ from .const import (
     CONF_CLIENT_ID,
     CONF_ENTITY_ID,
     CONF_ICON,
+    CONF_INDICATOR_SECONDARY_ENTITY_ID,
     CONF_LABEL,
     CONF_NAME,
     CONF_SCREEN,
+    CONF_SUBLABEL_ENTITY_ID,
     CONF_TILE,
     CONF_TILES,
     CONF_TYPE,
@@ -310,6 +312,13 @@ class OxrsOptionsFlow(OptionsFlow):
                     CONF_LABEL: user_input.get(CONF_LABEL, ""),
                     CONF_ICON: user_input.get(CONF_ICON, definition["icon"]),
                 }
+                sublabel_entity_id = user_input.get(CONF_SUBLABEL_ENTITY_ID)
+                if sublabel_entity_id:
+                    self._new_tile_config[CONF_SUBLABEL_ENTITY_ID] = sublabel_entity_id
+                if self._new_type == "indicator":
+                    secondary_entity_id = user_input.get(CONF_INDICATOR_SECONDARY_ENTITY_ID)
+                    if secondary_entity_id:
+                        self._new_tile_config[CONF_INDICATOR_SECONDARY_ENTITY_ID] = secondary_entity_id
                 # Go to background image selection step
                 return await self.async_step_add_tile_background()
 
@@ -317,30 +326,42 @@ class OxrsOptionsFlow(OptionsFlow):
                 {"value": str(i), "label": f"Position {i}"}
                 for i in free
             ]
-            schema = vol.Schema(
-                {
-                    vol.Required(
-                        CONF_TILE, default=str(free[0])
-                    ): selector.SelectSelector(
-                        selector.SelectSelectorConfig(
-                            options=tile_options,
-                            mode=selector.SelectSelectorMode.DROPDOWN,
-                        )
-                    ),
-                    vol.Required(CONF_ENTITY_ID): selector.EntitySelector(
-                        selector.EntitySelectorConfig(domain=definition["domain"])
-                    ),
-                    vol.Optional(CONF_LABEL, default=""): selector.TextSelector(),
-                    vol.Optional(
-                        CONF_ICON, default=definition["icon"]
-                    ): selector.SelectSelector(
-                        selector.SelectSelectorConfig(
-                            options=BUILTIN_ICONS,
-                            mode=selector.SelectSelectorMode.DROPDOWN,
-                        )
-                    ),
-                }
-            )
+            schema_dict: dict[Any, Any] = {
+                vol.Required(
+                    CONF_TILE, default=str(free[0])
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=tile_options,
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+                vol.Required(CONF_ENTITY_ID): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain=definition["domain"])
+                ),
+                vol.Optional(CONF_LABEL, default=""): selector.TextSelector(),
+                vol.Optional(
+                    CONF_ICON, default=definition["icon"]
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=BUILTIN_ICONS,
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+                # Common capability: optional subLabel source, any tile type,
+                # any domain (e.g. a sensor's value, another entity's state).
+                vol.Optional(CONF_SUBLABEL_ENTITY_ID): selector.EntitySelector(
+                    selector.EntitySelectorConfig()
+                ),
+            }
+            if self._new_type == "indicator":
+                # indicator tile: optional second sensor shown alongside the
+                # primary one (e.g. temperature + humidity in one tile).
+                schema_dict[
+                    vol.Optional(CONF_INDICATOR_SECONDARY_ENTITY_ID)
+                ] = selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor")
+                )
+            schema = vol.Schema(schema_dict)
             
             _LOGGER.debug("Showing tile details form")
             return self.async_show_form(

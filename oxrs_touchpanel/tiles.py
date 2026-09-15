@@ -19,6 +19,7 @@ from homeassistant.core import HomeAssistant
 
 from .const import (
     CONF_ENTITY_ID,
+    CONF_INDICATOR_SECONDARY_ENTITY_ID,
     CONF_SCREEN,
     CONF_TILE,
     KELVIN_MAX,
@@ -457,6 +458,140 @@ async def _select_handle_event(
         )
 
 
+# ─── buttonUpDownLevel → cover position OR light brightness, with the panel
+#     tracking the level internally (firmware sends back the resulting value
+#     after every up/down tap or hold, rather than just a direction) ─────────
+def _updownlevel_build_state(hass: HomeAssistant, tile: dict[str, Any]) -> dict[str, Any]:
+    entity_id = tile[CONF_ENTITY_ID]
+    domain = entity_id.split(".")[0]
+    state = hass.states.get(entity_id)
+
+    if domain == "cover":
+        position = None
+        if state is not None:
+            position = state.attributes.get("current_position")
+            if position is None:
+                position = 100 if state.state == "open" else 0
+        is_on = state is not None and state.state != "closed"
+        level = int(position or 0)
+    else:  # light
+        brightness = 0
+        if state is not None:
+            brightness = state.attributes.get("brightness") or 0
+        is_on = state is not None and state.state == "on"
+        level = round(int(brightness) / 255 * 100)
+
+    return {
+        "screen": tile[CONF_SCREEN],
+        "tile": tile[CONF_TILE],
+        "state": "on" if is_on else "off",
+        "level": level,
+    }
+
+
+async def _updownlevel_handle_event(
+    hass: HomeAssistant, tile: dict[str, Any], payload: dict[str, Any]
+) -> None:
+    """Apply a buttonUpDownLevel event.
+
+    The panel tracks the level internally and reports the NEW absolute value
+    in "state" after every tap/hold (type: "level", event: "up"|"down").
+    A plain tap on the tile itself (type: "button") toggles fully open/closed
+    or on/off, matching the other button-family tiles.
+    """
+    entity_id = tile[CONF_ENTITY_ID]
+    domain = entity_id.split(".")[0]
+    ptype = payload.get("type")
+
+    if ptype == "button" and payload.get("event") == "single":
+        if domain == "cover":
+            state = hass.states.get(entity_id)
+            if state is not None and state.state == "closed":
+                await hass.services.async_call(
+                    "cover", "open_cover", {"entity_id": entity_id}, blocking=False
+                )
+            else:
+                await hass.services.async_call(
+                    "cover", "close_cover", {"entity_id": entity_id}, blocking=False
+                )
+        else:
+            await hass.services.async_call(
+                "light", "toggle", {"entity_id": entity_id}, blocking=False
+            )
+        return
+
+    if ptype == "level" and payload.get("event") in ("up", "down"):
+        level = _clamp(int(payload.get("state") or 0), 0, 100)
+        if domain == "cover":
+            await hass.services.async_call(
+                "cover",
+                "set_cover_position",
+                {"entity_id": entity_id, "position": level},
+                blocking=False,
+            )
+        else:
+            if level <= 0:
+                await hass.services.async_call(
+                    "light", "turn_off", {"entity_id": entity_id}, blocking=False
+                )
+            else:
+                await hass.services.async_call(
+                    "light",
+                    "turn_on",
+                    {"entity_id": entity_id, "brightness_pct": level},
+                    blocking=False,
+                )
+
+
+# ─── indicator → sensor (display-only, no touch interaction) ────────────────
+_INDICATOR_ALLOWED_CHARS = set("0123456789+-.:")
+
+
+def _format_indicator_value(raw_state: str) -> str:
+    """Format a sensor state for the OXRS indicator tile.
+
+    OXRS restricts the "value" field to the characters 0-9 + - . : — try to
+    render numeric sensor values with one decimal place, and otherwise strip
+    anything the firmware would reject.
+    """
+    try:
+        return f"{float(raw_state):.1f}"
+    except (TypeError, ValueError):
+        return "".join(c for c in raw_state if c in _INDICATOR_ALLOWED_CHARS)
+
+
+def _indicator_build_state(hass: HomeAssistant, tile: dict[str, Any]) -> dict[str, Any]:
+    entity_id = tile[CONF_ENTITY_ID]
+    state = hass.states.get(entity_id)
+    value = ""
+    units = ""
+    if state is not None:
+        value = _format_indicator_value(state.state)
+        units = state.attributes.get("unit_of_measurement") or ""
+
+    number: dict[str, Any] = {"value": value, "units": units}
+
+    secondary_id = tile.get(CONF_INDICATOR_SECONDARY_ENTITY_ID)
+    if secondary_id:
+        secondary_state = hass.states.get(secondary_id)
+        if secondary_state is not None:
+            number["subValue"] = _format_indicator_value(secondary_state.state)
+            number["subUnits"] = secondary_state.attributes.get("unit_of_measurement") or ""
+
+    return {
+        "screen": tile[CONF_SCREEN],
+        "tile": tile[CONF_TILE],
+        "number": number,
+    }
+
+
+async def _indicator_handle_event(
+    hass: HomeAssistant, tile: dict[str, Any], payload: dict[str, Any]
+) -> None:
+    """indicator is display-only; the firmware sends it no touch events."""
+    return
+
+
 TILE_TYPES: dict[str, TileType] = {
     "rgbw": TileType(
         style="colorPickerRgbCct",
@@ -529,5 +664,23 @@ TILE_TYPES: dict[str, TileType] = {
         config_extra=None,
         build_state=_select_build_state,
         handle_event=_select_handle_event,
+    ),
+    "updownlevel": TileType(
+        style="buttonUpDownLevel",
+        domain=["cover", "light"],
+        icon="_blind",
+        label="Up/Down with level (cover position / light brightness)",
+        config_extra=_level_0_100,
+        build_state=_updownlevel_build_state,
+        handle_event=_updownlevel_handle_event,
+    ),
+    "indicator": TileType(
+        style="indicator",
+        domain="sensor",
+        icon="_thermostat",
+        label="Sensor display (temperature, humidity, etc.)",
+        config_extra=None,
+        build_state=_indicator_build_state,
+        handle_event=_indicator_handle_event,
     ),
 }

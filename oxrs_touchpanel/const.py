@@ -24,6 +24,14 @@ CONF_ENTITY_ID = "entity_id"
 CONF_LABEL = "label"
 CONF_ICON = "icon"
 
+# Common capability: optional secondary entity whose state is shown as the
+# tile's subLabel (e.g. "21.4°C", "on 5 mins ago"). Applies to ANY tile type.
+CONF_SUBLABEL_ENTITY_ID = "sublabel_entity_id"
+
+# indicator tile: optional second sensor shown alongside the primary one
+# (e.g. temperature + humidity in one tile)
+CONF_INDICATOR_SECONDARY_ENTITY_ID = "indicator_secondary_entity_id"
+
 # Per-tile keys (new - flexible actions)
 CONF_ACTIONS = "actions"
 CONF_ACTION_SEQUENCE = "sequence"
