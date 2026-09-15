@@ -5,6 +5,12 @@ from __future__ import annotations
 from homeassistant.const import Platform
 
 DOMAIN = "oxrs_touchpanel"
+
+# Separate hass.data namespace from hass.data[DOMAIN] (which maps
+# entry_id -> OxrsPanel), so the one shared media library instance can
+# never be confused with, or collide with, a panel keyed by its entry_id.
+LIBRARY_DATA_KEY = f"{DOMAIN}_library"
+
 PLATFORMS: list[Platform] = [
     Platform.BINARY_SENSOR,
     Platform.BUTTON,
@@ -44,12 +50,10 @@ CONF_ACTION_CONDITIONS = "conditions"
 CONF_ACTION_ENTITY = "action_entity"  # Optional entity for display/feedback
 CONF_ACTION_TILE_TYPE = "action_tile_type"  # User-chosen tile style (cct, slider, updown, etc.)
 
-# Background images
+# Legacy per-panel background image storage key. Only read now by the
+# one-time migration in __init__.py that moves old per-entry images into
+# the shared library (library.py) - see _async_migrate_legacy_images.
 CONF_BACKGROUND_IMAGES = "background_images"
-CONF_IMAGE_ID = "image_id"
-CONF_IMAGE_NAME = "image_name"
-CONF_IMAGE_DATA = "image_data"  # Base64 encoded image
-CONF_IMAGE_FORMAT = "image_format"  # jpg, png, gif, etc
 
 # Panel defaults (WT32S3-86V/86S are 3x3; smaller panels default to 2x3)
 DEFAULT_LAYOUT = {"horizontal": 3, "vertical": 3}
