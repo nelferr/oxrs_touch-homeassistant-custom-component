@@ -90,6 +90,13 @@
       "image_too_large": "Image is larger than 4 KB. Use the OXRS Asset Generator (https://oxrs.io/tools/asset-generator.html) to resize it first.",
       "invalid_image_name": "Image name cannot start with an underscore.",
       "image_uploaded": "Background image saved successfully!"
+    },
+    "error": {
+      "no_name": "Please enter an image name.",
+      "no_file": "Please paste the base64 image string.",
+      "image_error": "Invalid base64 string. Copy the imageBase64 value from the OXRS Asset Generator output.",
+      "image_too_large": "Image is larger than 4 KB. Use the OXRS Asset Generator (https://oxrs.io/tools/asset-generator.html) to resize it first.",
+      "invalid_image_name": "Image name cannot start with an underscore."
     }
   }
 }

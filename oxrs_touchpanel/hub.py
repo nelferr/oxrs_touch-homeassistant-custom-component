@@ -444,20 +444,21 @@ class OxrsPanel:
         
         # OLD format: tiles with CONF_ENTITY_ID + CONF_TYPE — match on the
         # tile's primary entity OR either of its optional secondary entities
-        # (subLabel source / indicator secondary sensor) so those live too.
-        old_format_tile = next(
-            (
-                t for t in self.tiles
-                if CONF_TYPE in t
-                and entity_id in (
-                    t.get(CONF_ENTITY_ID),
-                    t.get(CONF_SUBLABEL_ENTITY_ID),
-                    t.get(CONF_INDICATOR_SECONDARY_ENTITY_ID),
-                )
-            ),
-            None,
-        )
-        if old_format_tile:
+        # (subLabel source / indicator secondary sensor). Collect EVERY
+        # matching tile, not just the first: subLabel sources in particular
+        # are designed to be shared across many tiles (e.g. an "outdoor
+        # temperature" sensor used as the subLabel on several screens), and
+        # the same primary entity can also be bound to more than one tile.
+        old_format_tiles = [
+            t for t in self.tiles
+            if CONF_TYPE in t
+            and entity_id in (
+                t.get(CONF_ENTITY_ID),
+                t.get(CONF_SUBLABEL_ENTITY_ID),
+                t.get(CONF_INDICATOR_SECONDARY_ENTITY_ID),
+            )
+        ]
+        for old_format_tile in old_format_tiles:
             tiles_to_update.append((old_format_tile, old_format_tile[CONF_TYPE]))
         
         # NEW format: flexible tiles with CONF_ACTION_ENTITY
