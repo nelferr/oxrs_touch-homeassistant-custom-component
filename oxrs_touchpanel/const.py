@@ -36,6 +36,10 @@ CONF_SUBLABEL_ENTITY_ID = "sublabel_entity_id"
 # (e.g. temperature + humidity in one tile)
 CONF_INDICATOR_SECONDARY_ENTITY_ID = "indicator_secondary_entity_id"
 
+# link tile: no entity binding - this is the target screen number to
+# switch to when the tile is tapped.
+CONF_LINK_SCREEN = "link_screen"
+
 # Per-tile keys (new - flexible actions)
 CONF_ACTIONS = "actions"
 CONF_ACTION_SEQUENCE = "sequence"

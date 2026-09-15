@@ -20,6 +20,7 @@ from homeassistant.core import HomeAssistant
 from .const import (
     CONF_ENTITY_ID,
     CONF_INDICATOR_SECONDARY_ENTITY_ID,
+    CONF_LINK_SCREEN,
     CONF_SCREEN,
     CONF_TILE,
     KELVIN_MAX,
@@ -592,6 +593,57 @@ async def _indicator_handle_event(
     return
 
 
+# ─── buttonPrevNext → media_player (centre tap = play/pause, side zones =
+#     previous/next track) ────────────────────────────────────────────────
+def _media_prevnext_build_state(hass: HomeAssistant, tile: dict[str, Any]) -> dict[str, Any]:
+    state = hass.states.get(tile[CONF_ENTITY_ID])
+    is_on = state is not None and state.state == "playing"
+    return {
+        "screen": tile[CONF_SCREEN],
+        "tile": tile[CONF_TILE],
+        "state": "on" if is_on else "off",
+    }
+
+
+async def _media_prevnext_handle_event(
+    hass: HomeAssistant, tile: dict[str, Any], payload: dict[str, Any]
+) -> None:
+    """Centre tap toggles play/pause; the two side zones skip tracks."""
+    entity_id = tile[CONF_ENTITY_ID]
+    ptype = payload.get("type")
+    if ptype == "button" and payload.get("event") == "single":
+        await hass.services.async_call(
+            "media_player", "media_play_pause", {"entity_id": entity_id}, blocking=False
+        )
+    elif ptype == "prev":
+        await hass.services.async_call(
+            "media_player", "media_previous_track", {"entity_id": entity_id}, blocking=False
+        )
+    elif ptype == "next":
+        await hass.services.async_call(
+            "media_player", "media_next_track", {"entity_id": entity_id}, blocking=False
+        )
+
+
+# ─── link → switch to another screen on tap (no entity binding) ────────────
+def _link_config_extra(hass: HomeAssistant, tile: dict[str, Any]) -> dict[str, Any]:
+    return {"link": tile.get(CONF_LINK_SCREEN, 1)}
+
+
+def _link_build_state(hass: HomeAssistant, tile: dict[str, Any]) -> dict[str, Any]:
+    """No real on/off state for a link tile - state is optional per the
+    OXRS docs. Still return screen/tile so subLabel/backgroundImage (both
+    optional, common capabilities) can be attached if the user set them."""
+    return {"screen": tile[CONF_SCREEN], "tile": tile[CONF_TILE]}
+
+
+async def _link_handle_event(
+    hass: HomeAssistant, tile: dict[str, Any], payload: dict[str, Any]
+) -> None:
+    """The panel handles screen navigation internally on tap - nothing to do."""
+    return
+
+
 TILE_TYPES: dict[str, TileType] = {
     "rgbw": TileType(
         style="colorPickerRgbCct",
@@ -682,5 +734,23 @@ TILE_TYPES: dict[str, TileType] = {
         config_extra=None,
         build_state=_indicator_build_state,
         handle_event=_indicator_handle_event,
+    ),
+    "media_prevnext": TileType(
+        style="buttonPrevNext",
+        domain="media_player",
+        icon="_music",
+        label="Play/pause + skip track (media player)",
+        config_extra=None,
+        build_state=_media_prevnext_build_state,
+        handle_event=_media_prevnext_handle_event,
+    ),
+    "link": TileType(
+        style="link",
+        domain=[],  # no entity binding - config_flow shows a screen picker instead
+        icon="_remote",
+        label="Link (switch to another screen)",
+        config_extra=_link_config_extra,
+        build_state=_link_build_state,
+        handle_event=_link_handle_event,
     ),
 }

@@ -53,7 +53,8 @@
           "label": "Label",
           "icon": "Icon",
           "sublabel_entity_id": "Sub-label source (optional) - shows this entity's state under the tile",
-          "indicator_secondary_entity_id": "Secondary sensor (optional, indicator tiles only) - shown alongside the primary value"
+          "indicator_secondary_entity_id": "Secondary sensor (optional, indicator tiles only) - shown alongside the primary value",
+          "link_screen": "Target screen (link tiles only) - switches to this screen when tapped"
         }
       },
       "add_tile_background": {

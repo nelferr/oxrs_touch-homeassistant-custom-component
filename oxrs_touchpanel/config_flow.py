@@ -25,6 +25,7 @@ from .const import (
     CONF_ICON,
     CONF_INDICATOR_SECONDARY_ENTITY_ID,
     CONF_LABEL,
+    CONF_LINK_SCREEN,
     CONF_NAME,
     CONF_SCREEN,
     CONF_SCREEN_NAMES,
@@ -383,16 +384,27 @@ class OxrsOptionsFlow(OptionsFlow):
                 return self.async_abort(reason="screen_full")
 
             if user_input is not None:
-                _LOGGER.debug(f"Creating hardcoded tile with entity: {user_input[CONF_ENTITY_ID]}")
-                # Store tile details for next step (background image selection)
-                self._new_tile_config = {
-                    CONF_SCREEN: self._new_screen,
-                    CONF_TILE: int(user_input[CONF_TILE]),
-                    CONF_TYPE: self._new_type,
-                    CONF_ENTITY_ID: user_input[CONF_ENTITY_ID],
-                    CONF_LABEL: user_input.get(CONF_LABEL, ""),
-                    CONF_ICON: user_input.get(CONF_ICON, definition["icon"]),
-                }
+                # link tiles have no entity binding - they store a target
+                # screen number instead.
+                if self._new_type == "link":
+                    self._new_tile_config = {
+                        CONF_SCREEN: self._new_screen,
+                        CONF_TILE: int(user_input[CONF_TILE]),
+                        CONF_TYPE: self._new_type,
+                        CONF_LINK_SCREEN: int(user_input[CONF_LINK_SCREEN]),
+                        CONF_LABEL: user_input.get(CONF_LABEL, ""),
+                        CONF_ICON: user_input.get(CONF_ICON, definition["icon"]),
+                    }
+                else:
+                    _LOGGER.debug(f"Creating hardcoded tile with entity: {user_input[CONF_ENTITY_ID]}")
+                    self._new_tile_config = {
+                        CONF_SCREEN: self._new_screen,
+                        CONF_TILE: int(user_input[CONF_TILE]),
+                        CONF_TYPE: self._new_type,
+                        CONF_ENTITY_ID: user_input[CONF_ENTITY_ID],
+                        CONF_LABEL: user_input.get(CONF_LABEL, ""),
+                        CONF_ICON: user_input.get(CONF_ICON, definition["icon"]),
+                    }
                 sublabel_entity_id = user_input.get(CONF_SUBLABEL_ENTITY_ID)
                 if sublabel_entity_id:
                     self._new_tile_config[CONF_SUBLABEL_ENTITY_ID] = sublabel_entity_id
@@ -416,24 +428,35 @@ class OxrsOptionsFlow(OptionsFlow):
                         mode=selector.SelectSelectorMode.DROPDOWN,
                     )
                 ),
-                vol.Required(CONF_ENTITY_ID): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain=definition["domain"])
-                ),
-                vol.Optional(CONF_LABEL, default=""): selector.TextSelector(),
-                vol.Optional(
-                    CONF_ICON, default=definition["icon"]
-                ): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=BUILTIN_ICONS,
-                        mode=selector.SelectSelectorMode.DROPDOWN,
-                    )
-                ),
-                # Common capability: optional subLabel source, any tile type,
-                # any domain (e.g. a sensor's value, another entity's state).
-                vol.Optional(CONF_SUBLABEL_ENTITY_ID): selector.EntitySelector(
-                    selector.EntitySelectorConfig()
-                ),
             }
+            if self._new_type == "link":
+                # No entity to bind - pick the target screen instead.
+                schema_dict[vol.Required(CONF_LINK_SCREEN, default=1)] = selector.NumberSelector(
+                    selector.NumberSelectorConfig(min=1, max=32, mode="box")
+                )
+            else:
+                schema_dict[vol.Required(CONF_ENTITY_ID)] = selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain=definition["domain"])
+                )
+            schema_dict.update(
+                {
+                    vol.Optional(CONF_LABEL, default=""): selector.TextSelector(),
+                    vol.Optional(
+                        CONF_ICON, default=definition["icon"]
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=BUILTIN_ICONS,
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                    # Common capability: optional subLabel source, any tile
+                    # type, any domain (e.g. a sensor's value, another
+                    # entity's state).
+                    vol.Optional(CONF_SUBLABEL_ENTITY_ID): selector.EntitySelector(
+                        selector.EntitySelectorConfig()
+                    ),
+                }
+            )
             if self._new_type == "indicator":
                 # indicator tile: optional second sensor shown alongside the
                 # primary one (e.g. temperature + humidity in one tile).
@@ -598,7 +621,12 @@ class OxrsOptionsFlow(OptionsFlow):
                 "label": (
                     f"S{tile[CONF_SCREEN]}·T{tile[CONF_TILE]} "
                     f"[{tile.get(CONF_TYPE, '')}] "
-                    f"{tile.get(CONF_LABEL) or ''} ({tile.get(CONF_ENTITY_ID, 'N/A')})"
+                    f"{tile.get(CONF_LABEL) or ''} "
+                    + (
+                        f"(-> Screen {tile[CONF_LINK_SCREEN]})"
+                        if tile.get(CONF_TYPE) == "link"
+                        else f"({tile.get(CONF_ENTITY_ID, 'N/A')})"
+                    )
                 ),
             }
             for index, tile in enumerate(self._tiles)
