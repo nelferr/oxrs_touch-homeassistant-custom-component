@@ -28,7 +28,8 @@
         "menu_options": {
           "add_tile": "Add a tile",
           "remove_tile": "Remove a tile",
-          "manage_background_images": "Manage background images"
+          "manage_background_images": "Manage background images",
+          "rename_screen": "Rename a screen"
         }
       },
       "add_tile": {
@@ -75,6 +76,21 @@
         "data": {
           "index": "Tile to remove"
         }
+      },
+      "name_screen": {
+        "title": "Name this screen",
+        "description": "Give screen {screen} a name, or keep the current one. This appears as the screen's label on the panel.",
+        "data": {
+          "screen_name": "Screen name"
+        }
+      },
+      "rename_screen": {
+        "title": "Rename a screen",
+        "description": "Choose a screen and enter its new name.",
+        "data": {
+          "screen": "Screen",
+          "screen_name": "New name"
+        }
       }
     },
     "abort": {
@@ -89,7 +105,8 @@
       "image_error": "Invalid base64 string. Copy the imageBase64 value from the OXRS Asset Generator output.",
       "image_too_large": "Image is larger than 4 KB. Use the OXRS Asset Generator (https://oxrs.io/tools/asset-generator.html) to resize it first.",
       "invalid_image_name": "Image name cannot start with an underscore.",
-      "image_uploaded": "Background image saved successfully!"
+      "image_uploaded": "Background image saved successfully!",
+      "no_screens": "No screens exist yet \u2014 add a tile first."
     },
     "error": {
       "no_name": "Please enter an image name.",

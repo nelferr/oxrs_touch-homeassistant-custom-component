@@ -16,6 +16,10 @@ CONF_CLIENT_ID = "client_id"
 CONF_NAME = "name"
 CONF_TILES = "tiles"
 
+# Optional per-screen display names: {str(screen_number): "Living Room"}.
+# Screens without an entry here fall back to the panel's own title, as before.
+CONF_SCREEN_NAMES = "screen_names"
+
 # Per-tile keys (old - kept for backward compatibility)
 CONF_SCREEN = "screen"
 CONF_TILE = "tile"

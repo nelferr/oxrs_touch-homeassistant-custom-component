@@ -23,6 +23,7 @@ from .const import (
     CONF_INDICATOR_SECONDARY_ENTITY_ID,
     CONF_LABEL,
     CONF_SCREEN,
+    CONF_SCREEN_NAMES,
     CONF_SUBLABEL_ENTITY_ID,
     CONF_TILE,
     CONF_TILES,
@@ -41,7 +42,7 @@ from .const import (
 )
 from .models import OxrsTile
 from .background_images import BackgroundImageManager
-from .tiles import TILE_TYPES
+from .tiles import TILE_TYPES, TileType
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -308,10 +309,11 @@ class OxrsPanel:
                 
                 tiles_conf.append(tile_conf)
             
+            screen_names = self.entry.options.get(CONF_SCREEN_NAMES, {})
             conf["screens"].append(
                 {
                     "screen": screen_idx,
-                    "label": self.entry.title,
+                    "label": screen_names.get(str(screen_idx), self.entry.title),
                     "screenLayout": DEFAULT_LAYOUT,
                     "tiles": tiles_conf,
                 }
@@ -498,6 +500,47 @@ class OxrsPanel:
                     )
                 )
 
+    async def _handle_event_and_confirm(
+        self,
+        handler: TileType,
+        handle_tile: dict[str, Any],
+        build_tile: dict[str, Any],
+        augment_tile: dict[str, Any],
+        tile_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        """Apply an inbound touch event, then re-push the tile's true state.
+
+        Bug this fixes: turning a light on via a tap (e.g. a CCT or RGBW
+        tile's toggle) calls light.toggle/turn_on with no explicit
+        brightness, so the light comes on at whatever HA/the device decides.
+        The panel has no way to know that value ahead of time, and if the
+        entity's brightness attribute isn't populated yet on the very first
+        state-changed event (common with some integrations - the on/off
+        flag lands before the attributes), the panel can end up stuck
+        showing 0% brightness even though the light is genuinely on.
+
+        Relying solely on the live entity-change listener (_on_entity_change)
+        assumes a follow-up state-changed event will arrive with the correct
+        attributes - which isn't guaranteed to happen promptly, or at all,
+        depending on the integration. This adds a guaranteed correction
+        shortly after every touch event, on top of that listener: wait for
+        things to settle, then rebuild the tile's state from whatever HA
+        reports at that point and push it, regardless of whether another
+        update already arrived in the meantime (harmless if so - it's an
+        idempotent re-send of the current truth).
+        """
+        await handler["handle_event"](self.hass, handle_tile, payload)
+        await asyncio.sleep(0.6)
+        state = handler["build_state"](self.hass, build_tile)
+        if state is not None:
+            _augment_tile_state(self.hass, state, augment_tile)
+            await mqtt.async_publish(
+                self.hass,
+                topic_cmnd(self.client_id),
+                json.dumps({"tiles": [state]}),
+            )
+
     # ── inbound: panel -> HA ─────────────────────────────────────────────────
     @callback
     def _on_stat(self, msg: mqtt.ReceiveMessage) -> None:
@@ -583,7 +626,9 @@ class OxrsPanel:
                 _LOGGER.debug(f"Payload being passed to handler: {payload}")
                 
                 self.hass.async_create_task(
-                    handler["handle_event"](self.hass, temp_tile, payload)
+                    self._handle_event_and_confirm(
+                        handler, temp_tile, temp_tile, tile, matching_type, payload
+                    )
                 )
                 return
             
@@ -601,7 +646,9 @@ class OxrsPanel:
             
             _LOGGER.debug(f"Calling {tile_type} handle_event for hardcoded tile {screen}/{tile_idx}")
             self.hass.async_create_task(
-                handler["handle_event"](self.hass, tile, payload)
+                self._handle_event_and_confirm(
+                    handler, tile, tile, tile, tile_type, payload
+                )
             )
         except Exception as err:
             _LOGGER.error(

@@ -27,6 +27,7 @@ from .const import (
     CONF_LABEL,
     CONF_NAME,
     CONF_SCREEN,
+    CONF_SCREEN_NAMES,
     CONF_SUBLABEL_ENTITY_ID,
     CONF_TILE,
     CONF_TILES,
@@ -125,6 +126,9 @@ class OxrsOptionsFlow(OptionsFlow):
         self._tiles: list[dict[str, Any]] = list(
             config_entry.options.get(CONF_TILES, [])
         )
+        self._screen_names: dict[str, str] = dict(
+            config_entry.options.get(CONF_SCREEN_NAMES, {})
+        )
         self._new_type: str | None = None
         self._new_screen: int = 1
         self._new_tile_config: dict[str, Any] | None = None
@@ -134,7 +138,13 @@ class OxrsOptionsFlow(OptionsFlow):
     ) -> ConfigFlowResult:
         """Show the tile-management menu."""
         return self.async_show_menu(
-            step_id="init", menu_options=["add_tile", "remove_tile", "manage_background_images"]
+            step_id="init",
+            menu_options=[
+                "add_tile",
+                "remove_tile",
+                "rename_screen",
+                "manage_background_images",
+            ],
         )
 
     async def async_step_add_tile(
@@ -148,8 +158,9 @@ class OxrsOptionsFlow(OptionsFlow):
                 self._new_screen = int(user_input[CONF_SCREEN])
                 _LOGGER.debug(f"User chose screen: {self._new_screen}")
                 
-                # Go to tile type selection
-                return await self.async_step_add_tile_type()
+                # Give the user a chance to (re)name this screen before
+                # picking the tile type.
+                return await self.async_step_name_screen()
 
             schema = vol.Schema(
                 {
@@ -169,6 +180,76 @@ class OxrsOptionsFlow(OptionsFlow):
             )
         except Exception as err:
             _LOGGER.error(f"Error in async_step_add_tile: {err}", exc_info=True)
+            return self.async_abort(reason="invalid_format")
+
+    async def async_step_name_screen(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Optionally set/change the display name for the chosen screen."""
+        try:
+            current_name = self._screen_names.get(
+                str(self._new_screen), f"Screen {self._new_screen}"
+            )
+            if user_input is not None:
+                new_name = user_input.get("screen_name", "").strip()
+                if new_name:
+                    self._screen_names[str(self._new_screen)] = new_name
+                    _LOGGER.debug(f"Screen {self._new_screen} named '{new_name}'")
+                return await self.async_step_add_tile_type()
+
+            schema = vol.Schema(
+                {
+                    vol.Optional("screen_name", default=current_name): selector.TextSelector(),
+                }
+            )
+            return self.async_show_form(
+                step_id="name_screen",
+                data_schema=schema,
+                description_placeholders={"screen": str(self._new_screen)},
+            )
+        except Exception as err:
+            _LOGGER.error(f"Error in async_step_name_screen: {err}", exc_info=True)
+            return self.async_abort(reason="invalid_format")
+
+    async def async_step_rename_screen(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Rename an existing screen without adding a tile."""
+        try:
+            known_screens = sorted({t[CONF_SCREEN] for t in self._tiles})
+            if not known_screens:
+                return self.async_abort(reason="no_screens")
+
+            if user_input is not None:
+                screen = int(user_input["screen"])
+                new_name = user_input.get("screen_name", "").strip()
+                if new_name:
+                    self._screen_names[str(screen)] = new_name
+                new_options = dict(self._entry.options)
+                new_options[CONF_SCREEN_NAMES] = self._screen_names
+                return self.async_create_entry(title="", data=new_options)
+
+            screen_options = [
+                {
+                    "value": str(s),
+                    "label": self._screen_names.get(str(s), f"Screen {s}"),
+                }
+                for s in known_screens
+            ]
+            schema = vol.Schema(
+                {
+                    vol.Required("screen", default=str(known_screens[0])): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=screen_options,
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                    vol.Optional("screen_name", default=""): selector.TextSelector(),
+                }
+            )
+            return self.async_show_form(step_id="rename_screen", data_schema=schema)
+        except Exception as err:
+            _LOGGER.error(f"Error in async_step_rename_screen: {err}", exc_info=True)
             return self.async_abort(reason="invalid_format")
 
     async def async_step_add_tile_type(
@@ -398,6 +479,7 @@ class OxrsOptionsFlow(OptionsFlow):
                 _LOGGER.info(f"Tile created at screen {self._new_screen}/position {self._new_tile_config[CONF_TILE]}")
                 new_options = dict(self._entry.options)
                 new_options[CONF_TILES] = self._tiles
+                new_options[CONF_SCREEN_NAMES] = self._screen_names
                 return self.async_create_entry(title="", data=new_options)
             
             # Get background image options from manager
