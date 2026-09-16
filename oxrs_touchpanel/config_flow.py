@@ -481,6 +481,11 @@ class OxrsOptionsFlow(OptionsFlow):
                 {"value": str(i), "label": f"Position {i}"}
                 for i in free
             ]
+            # Tile types may narrow the picker past the domain, so a door tile
+            # offers door and window contacts rather than every binary_sensor.
+            entity_config: dict[str, Any] = {"domain": definition["domain"]}
+            if definition.get("device_class"):
+                entity_config["device_class"] = definition["device_class"]
             schema_dict: dict[Any, Any] = {
                 vol.Required(
                     CONF_TILE, default=str(free[0])
@@ -491,7 +496,7 @@ class OxrsOptionsFlow(OptionsFlow):
                     )
                 ),
                 vol.Required(CONF_ENTITY_ID): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain=definition["domain"])
+                    selector.EntitySelectorConfig(**entity_config)
                 ),
                 vol.Optional(CONF_LABEL, default=""): selector.TextSelector(),
                 vol.Optional(

@@ -3,6 +3,8 @@
 Each tile type declares:
   * ``style``  - the OXRS tile style string used in the ``conf/`` payload.
   * ``domain`` - the HA entity domain the tile binds to (drives the picker).
+  * ``device_class`` - optional; narrows the picker beyond the domain, so a
+    door tile only offers door/window contacts rather than every binary_sensor.
   * ``icon``   - default icon if the user does not choose one.
   * ``build_state`` - build the ``cmnd/`` tile object from the bound entity.
   * ``handle_event`` - apply an incoming ``stat/`` event to the bound entity.
@@ -13,7 +15,7 @@ Add a new tile type by adding an entry here; no other files need to change.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 from homeassistant.core import HomeAssistant
 
@@ -32,6 +34,7 @@ class TileType(TypedDict):
 
     style: str
     domain: str | list[str]
+    device_class: NotRequired[str | list[str]]
     icon: str
     label: str
     config_extra: Callable[[HomeAssistant, dict[str, Any]], dict[str, Any]] | None
@@ -585,11 +588,58 @@ def _indicator_build_state(hass: HomeAssistant, tile: dict[str, Any]) -> dict[st
     }
 
 
-async def _indicator_handle_event(
+async def _display_only_handle_event(
     hass: HomeAssistant, tile: dict[str, Any], payload: dict[str, Any]
 ) -> None:
-    """indicator is display-only; the firmware sends it no touch events."""
+    """Swallow touch events for tiles that only report, never control.
+
+    The indicator style receives no touch events from the firmware at all.
+    The button style does, so the door/window, presence and text tiles below
+    reuse this to stay read-only despite being tappable.
+    """
     return
+
+
+# ─── read-only binary_sensor tiles (doors / windows / presence) ─────────────
+def _binary_display_builder(
+    on_text: str, off_text: str
+) -> Callable[[HomeAssistant, dict[str, Any]], dict[str, Any]]:
+    """Build a display-only ``build_state`` for an on/off sensor.
+
+    The tile's lit/unlit state carries the reading at a glance; the subLabel
+    spells it out. A subLabel source picked in the config flow still wins -
+    ``_augment_tile_state`` applies it after this returns.
+    """
+
+    def build(hass: HomeAssistant, tile: dict[str, Any]) -> dict[str, Any]:
+        state = hass.states.get(tile[CONF_ENTITY_ID])
+        is_on = state is not None and state.state == "on"
+        return {
+            "screen": tile[CONF_SCREEN],
+            "tile": tile[CONF_TILE],
+            "state": "on" if is_on else "off",
+            "subLabel": on_text if is_on else off_text,
+        }
+
+    return build
+
+
+# ─── text → sensor (state rendered as text in place of the icon) ────────────
+def _text_build_state(hass: HomeAssistant, tile: dict[str, Any]) -> dict[str, Any]:
+    """Render a sensor's state as tile text.
+
+    This is the escape hatch from the indicator style, whose "value" field the
+    firmware restricts to 0-9 + - . : — no use for states like "Home" or
+    "Disconnected". A non-empty "text" hides the icon and shows the text
+    instead; an empty one restores the icon, which is the right fallback when
+    the entity is missing.
+    """
+    state = hass.states.get(tile[CONF_ENTITY_ID])
+    return {
+        "screen": tile[CONF_SCREEN],
+        "tile": tile[CONF_TILE],
+        "text": "" if state is None else state.state,
+    }
 
 
 TILE_TYPES: dict[str, TileType] = {
@@ -681,6 +731,38 @@ TILE_TYPES: dict[str, TileType] = {
         label="Sensor display (temperature, humidity, etc.)",
         config_extra=None,
         build_state=_indicator_build_state,
-        handle_event=_indicator_handle_event,
+        handle_event=_display_only_handle_event,
+    ),
+    # Read-only tiles. They use the button style because it lights up with
+    # "state" and can show text, which indicator cannot — but they send no
+    # service calls back, so tapping them does nothing.
+    "door_window": TileType(
+        style="button",
+        domain="binary_sensor",
+        device_class=["door", "window", "garage_door", "opening"],
+        icon="_door",
+        label="Door / window contact (read-only)",
+        config_extra=None,
+        build_state=_binary_display_builder("Open", "Closed"),
+        handle_event=_display_only_handle_event,
+    ),
+    "presence": TileType(
+        style="button",
+        domain="binary_sensor",
+        device_class=["motion", "occupancy", "presence"],
+        icon="_onoff",
+        label="Presence / motion (read-only)",
+        config_extra=None,
+        build_state=_binary_display_builder("Detected", "Clear"),
+        handle_event=_display_only_handle_event,
+    ),
+    "text": TileType(
+        style="button",
+        domain=["sensor", "binary_sensor"],
+        icon="_onoff",
+        label="Text display (sensor state as text)",
+        config_extra=None,
+        build_state=_text_build_state,
+        handle_event=_display_only_handle_event,
     ),
 }

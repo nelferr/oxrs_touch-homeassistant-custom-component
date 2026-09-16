@@ -71,11 +71,17 @@ hides the icon, empty restores it**. Follow the code, not the docs.
 ### A.3 The recipe for adding a tile type
 
 1. `tiles.py` — add a `TILE_TYPES` entry: `style`, `domain`, `icon`, `label`,
-   `config_extra`, `build_state`, `handle_event`.
-2. `config_flow.py` — add a branch to `_get_entity_filter_for_tile_type` when
-   the filter needs to be narrower than a bare domain match (device_class,
-   supported_features, attribute presence).
-3. Nothing else. `hub.py` drives everything generically off the registry.
+   `config_extra`, `build_state`, `handle_event`, and optionally
+   `device_class` to narrow the picker past the domain.
+2. Nothing else. `hub.py` drives everything generically off the registry, and
+   the config flow builds both the type dropdown and the entity picker
+   (including `device_class`) from it.
+
+**Do not** reach for `_get_entity_filter_for_tile_type` in `config_flow.py`.
+It is dead code — defined, never called — left behind when commit `45b26d9`
+reverted submit-time capability validation. Filtering that `EntitySelectorConfig`
+can express (`domain`, `device_class`, `supported_features`) belongs in the
+registry; anything it can't is a deliberate gap, not an oversight.
 
 Two things the registry does **not** support yet, needed by a few cards below:
 - **Periodic re-push** (countdown timers, media track position). Needs an
@@ -98,9 +104,9 @@ Two things the registry does **not** support yet, needed by a few cards below:
 | Option Select | `dropDown` / `buttonSelector` | select, input_select | done, add in-tile variant |
 | Trigger | `button` | none | use flexible actions instead |
 | Webhook | — | — | out of scope, use HA `rest_command` |
-| Sensor | `indicator` / `button`+`text` | sensor | done for numeric, new for text |
-| Doors & Windows | `button` (read-only) | binary_sensor | new |
-| Presence | `button` (read-only) | binary_sensor | new |
+| Sensor | `indicator` / `button`+`text` | sensor | ✅ built (`indicator`, `text`) |
+| Doors & Windows | `button` (read-only) | binary_sensor | ✅ built (`door_window`) |
+| Presence | `button` (read-only) | binary_sensor | ✅ built (`presence`) |
 | Slider | `buttonSlider` | light, fan, number, input_number | extend `slider` |
 | Fans | `buttonSelector` + `buttonLeftRight` | fan | new |
 | Cover | `buttonSlider`, `buttonLeftRight` | cover | extend `updown*` |
@@ -191,31 +197,46 @@ Identical to Vacuum with `["Mow", "Pause", "Dock"]` →
 own `rest_command` / `webhook` integrations. Adding panel-side HTTP would put
 network config on the panel that HA already owns.
 
-### 9. Sensor
-**Done for numeric** (`indicator`) · **New for text**
+### 9. Sensor — ✅ built
+**Numeric:** `indicator` (pre-existing) · **Text:** `text`, style `button`
 
 - The `indicator` style restricts `number.value` to `0-9 + - . :`, which is why
-  `_format_indicator_value` strips everything else. For non-numeric sensors use
-  a **different style**: `button` with `text` set to the state, coloured via
-  `"#RRGGBB {state}#"`, `handle_event` a no-op.
-- **Duration formatting:** for `device_class: duration` or timestamp sensors,
-  format as `"H:MM"` — the `indicator` charset allows `:`.
+  `_format_indicator_value` strips everything else. The `text` type is the
+  escape hatch: `button` style with `text` set to the raw state, so "Running"
+  or "Disconnected" render fine. Non-empty text hides the icon; empty restores
+  it, which is the fallback when the entity is missing.
+- Accepts `sensor` and `binary_sensor` — a binary_sensor reading as literal
+  `on`/`off` text is sometimes what you want over a lit tile.
+- **Not done:** colouring via `"#RRGGBB {state}#"`, and duration/timestamp
+  formatting as `"H:MM"`. Both are additive later.
 
-### 10. Doors & Windows
-**New** · **Style** `button`, read-only · **Domain** `binary_sensor`
+### 10. Doors & Windows — ✅ built as `door_window`
+**Style** `button`, read-only · **Domain** `binary_sensor`
 
-- **Filter:** `device_class in ("door", "window", "garage_door", "opening")`.
-- **build_state:** `state` = `"on"` when open; `icon` swapped `_door` / `_window`;
-  `iconColorRgb` red `{255,60,60}` when open, neutral when closed;
-  `subLabel` = `"Open"` / `"Closed"` (or last-changed, relative).
-- **handle_event:** no-op — display only, like `_indicator_handle_event`.
-- **Why `button` and not `indicator`:** `indicator` can't render words, and a
-  lit/unlit coloured icon reads better across a room than text.
+- **Filter:** `device_class: ["door", "window", "garage_door", "opening"]` in the
+  registry entry, passed to `EntitySelectorConfig`.
+- **build_state:** `state` = `"on"` when open, `subLabel` = `"Open"` / `"Closed"`.
+  A subLabel source picked in the config flow still overrides this, since
+  `_augment_tile_state` runs after `build_state`.
+- **handle_event:** `_display_only_handle_event` — the button style *does*
+  receive taps, unlike `indicator`, so the no-op is what keeps it read-only.
+- **Dropped from v1 — icon swapping.** The spec originally called for swapping
+  `_door` / `_window` by state, but the firmware built-ins have no open/closed
+  *pair* — there is one `_door` and one `_window` glyph. A real swap needs the
+  custom `door-open` / `door-closed` icons from `TILE_ICONS_BASE64.json`
+  uploaded first, so it can't be the default behaviour. Revisit as an optional
+  per-tile "icon when open" setting.
+- **Dropped from v1 — `iconColorRgb`.** Whether the firmware tints a *custom*
+  PNG or only its own built-ins is undocumented, and setting it overrides the
+  panel's configured on-colour with no clean way back. Needs testing on real
+  hardware before shipping.
 
-### 11. Presence
-**New** · Same as Doors & Windows with
-`device_class in ("motion", "occupancy", "presence")`, icons from the shared
-library, `subLabel` = `"Detected"` / `"Clear"`.
+### 11. Presence — ✅ built as `presence`
+Same as `door_window` with
+`device_class: ["motion", "occupancy", "presence"]` and
+`subLabel` = `"Detected"` / `"Clear"`. Default icon is `_onoff`; the built-ins
+have no person or motion glyph, so `motion` / `presence-home` from
+`TILE_ICONS_BASE64.json` are the better pick once uploaded.
 
 ### 12. Slider
 **Extends** `slider` · **Style** `buttonSlider`
@@ -428,9 +449,9 @@ Firmware features with no ESPControl equivalent, worth considering anyway:
 
 ## Part E — Suggested build order
 
-1. **Read-only cards first** — Doors & Windows, Presence, text Sensor. No new
-   firmware styles, no new infrastructure, immediate UX win from the filtered
-   picker.
+1. ~~**Read-only cards first** — Doors & Windows, Presence, text Sensor.~~
+   ✅ Done: `door_window`, `presence`, `text`. Added `device_class` to the
+   registry as the picker-narrowing mechanism, which every later card reuses.
 2. **Simple control cards** — Lock (button variant), Garage Door, Gate, Switch
    and Action domain extensions.
 3. **Unused-style cards** — Subpage (`link`), Fans direction (`buttonLeftRight`),
