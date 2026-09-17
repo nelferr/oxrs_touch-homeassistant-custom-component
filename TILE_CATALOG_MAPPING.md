@@ -438,10 +438,37 @@ Same as above with a user-chosen tz (`zoneinfo`), `label` = city name.
 
 - Pipeline: `camera.async_get_image` → downscale → PNG → base64 → `addImage`
   → tile references it by name. `library.py` already has the second half.
-- **Hard limit:** base64 payload must stay under **4096 bytes** or the panel
-  crashes (`MAX_ENCODED_SIZE` in `library.py`). That's ~3 KB of PNG — a heavily
-  downscaled, low-colour thumbnail. Needs a Pillow dependency for the resize.
+- **The 4 KB limit is softer than the docs claim** — see "Image size budget"
+  below. Needs Pillow for the resize, which HA already ships.
 - Treat as a "latest snapshot" tile refreshed on a slow interval, not a stream.
+
+### Image size budget (measured, not documented)
+
+The OXRS docs say an encoded image "should not exceed 4KB to avoid crashes -
+TBC", and `library.py` enforced that. It buys about 12 colours at tile size, so
+photographs come out badly posterised. Measured against a panel instead:
+
+| Encoded size | 140px result | Outcome |
+| ---: | :--- | :--- |
+| 3.7 KB | 3 colours | draws, unusable for photos |
+| 8 KB | 8 colours | draws |
+| 16.3 KB | 58 colours | draws, "decent" |
+| 25.7 KB | 256 colours | draws, indistinguishable from the original |
+| 58.4 KB | full colour | draws |
+| 48.6 KB | 300px (2x2 tile) | draws |
+| 63.8 KB | 460px (full screen) | draws |
+
+So `MAX_ENCODED_SIZE` is now a warning threshold, with a hard refusal at 64 KB.
+
+**Caveat: these were run on the PC emulator, not a physical panel.** The
+emulator has none of the ESP32's RAM or MQTT buffer limits, so treat every row
+above 4 KB as unconfirmed until the same ladder runs on hardware. Anything built
+on this should take the byte budget as a setting rather than baking one in.
+
+PNG costs rise steeply with pixel size: at 48 KB a 300px image affords only 30
+colours, and at 64 KB a 460px one just 11. A good-looking full-screen image
+would need well over 100 KB. JPEG would change that entirely, but the docs
+require PNG for backgrounds and the panel appears to agree.
 
 ### 24. Wifi Sharing
 **New** · **Style** any + `backgroundImage` · no entity
@@ -495,7 +522,7 @@ Music Assistant players via the selector's `integration` filter.
   after the tile is removed and re-added — there is no edit-tile flow.
 - **`buttonPrevNext`** is purpose-built for this — the firmware even documents it
   with a `_music` icon and "Skip track" label. Its `prev` / `next` event names
-  come from the OXRS docs and are not yet verified on hardware.
+  are confirmed working, as is the playlist dropdown (tested on the emulator).
 - **`remote`** returns `type` ∈ `home/info/back/list/ok/up/down/left/right`. Map
   to HA's `remote.send_command` for a bound `remote` entity, or to
   `media_player` equivalents for players that expose them (Kodi, Android TV).
