@@ -29,7 +29,8 @@
           "add_tile": "Add a tile",
           "remove_tile": "Remove a tile",
           "manage_background_images": "Manage background images",
-          "rename_screen": "Rename a screen"
+          "rename_screen": "Rename a screen",
+          "manage_custom_icons": "Manage custom icons"
         }
       },
       "add_tile": {
@@ -64,11 +65,10 @@
         }
       },
       "manage_background_images": {
-        "title": "Add background image",
-        "description": "Generate a base64 image string using the OXRS Asset Generator at https://oxrs.io/tools/asset-generator.html then paste the imageBase64 value below. Images must be under 4 KB and names cannot start with an underscore.",
-        "data": {
-          "image_name": "Image name (used to reference this image on tiles)",
-          "image_base64": "Base64 image string (paste from OXRS Asset Generator)"
+        "title": "Manage background images",
+        "menu_options": {
+          "add_background_image": "Add a background image",
+          "delete_background_image": "Delete a background image"
         }
       },
       "remove_tile": {
@@ -91,6 +91,44 @@
           "screen": "Screen",
           "screen_name": "New name"
         }
+      },
+      "add_background_image": {
+        "title": "Add background image",
+        "description": "Generate a base64 image string using the OXRS Asset Generator at https://oxrs.io/tools/asset-generator.html then paste the imageBase64 value below. This image becomes available on every configured panel. Images must be under 4 KB and names cannot start with an underscore.",
+        "data": {
+          "image_name": "Image name (used to reference this image on tiles)",
+          "image_base64": "Base64 image string (paste from OXRS Asset Generator)"
+        }
+      },
+      "delete_background_image": {
+        "title": "Delete a background image",
+        "description": "Choose an image to remove from the shared library. Any tile still referencing it (on any panel) will simply stop receiving it next time that panel's configuration is pushed.",
+        "data": {
+          "image_id": "Image to delete"
+        }
+      },
+      "manage_custom_icons": {
+        "title": "Manage custom icons",
+        "menu_options": {
+          "add_custom_icon": "Add a custom icon",
+          "delete_custom_icon": "Delete a custom icon"
+        }
+      },
+      "add_custom_icon": {
+        "title": "Add custom icon",
+        "description": "Generate a base64 PNG using the OXRS Asset Generator at https://oxrs.io/tools/asset-generator.html (change addImage to addIcon in its output) then paste the imageBase64 value below. This icon becomes available on every configured panel, grouped by category in the icon picker. Icons must be PNG, under 4 KB, and names cannot start with an underscore.",
+        "data": {
+          "icon_name": "Icon name (used to reference this icon on tiles)",
+          "icon_base64": "Base64 PNG string (paste from OXRS Asset Generator)",
+          "category": "Category"
+        }
+      },
+      "delete_custom_icon": {
+        "title": "Delete a custom icon",
+        "description": "Choose an icon to remove from the shared library.",
+        "data": {
+          "icon_id": "Icon to delete"
+        }
       }
     },
     "abort": {
@@ -105,15 +143,21 @@
       "image_error": "Invalid base64 string. Copy the imageBase64 value from the OXRS Asset Generator output.",
       "image_too_large": "Image is larger than 4 KB. Use the OXRS Asset Generator (https://oxrs.io/tools/asset-generator.html) to resize it first.",
       "invalid_image_name": "Image name cannot start with an underscore.",
-      "image_uploaded": "Background image saved successfully!",
-      "no_screens": "No screens exist yet \u2014 add a tile first."
+      "image_uploaded": "Background image saved to the shared library - available on every panel!",
+      "no_screens": "No screens exist yet \u2014 add a tile first.",
+      "image_deleted": "Background image deleted from the shared library.",
+      "no_images": "There are no background images in the shared library yet.",
+      "icon_uploaded": "Custom icon saved to the shared library - available on every panel!",
+      "icon_deleted": "Custom icon deleted from the shared library.",
+      "no_icons": "There are no custom icons in the shared library yet."
     },
     "error": {
-      "no_name": "Please enter an image name.",
-      "no_file": "Please paste the base64 image string.",
+      "no_name": "Please enter a name.",
+      "no_file": "Please paste the base64 string.",
       "image_error": "Invalid base64 string. Copy the imageBase64 value from the OXRS Asset Generator output.",
-      "image_too_large": "Image is larger than 4 KB. Use the OXRS Asset Generator (https://oxrs.io/tools/asset-generator.html) to resize it first.",
-      "invalid_image_name": "Image name cannot start with an underscore."
+      "image_too_large": "Too large - the encoded string must stay under 4 KB. Use the OXRS Asset Generator (https://oxrs.io/tools/asset-generator.html) to resize it first.",
+      "invalid_image_name": "Name cannot start with an underscore (reserved for built-ins).",
+      "icon_must_be_png": "Custom icons must be PNG format."
     }
   }
 }

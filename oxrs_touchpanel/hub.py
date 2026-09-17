@@ -41,7 +41,7 @@ from .const import (
     topic_tele,
 )
 from .models import OxrsTile
-from .background_images import BackgroundImageManager
+from .library import SharedMediaLibrary
 from .tiles import TILE_TYPES, TileType
 
 _LOGGER = logging.getLogger(__name__)
@@ -72,11 +72,14 @@ def _find_tile_type_for_domain(domain: str, tile_types: dict[str, Any]) -> str |
 
 
 def _augment_tile_state(
-    hass: HomeAssistant, state: dict[str, Any], tile: dict[str, Any]
+    hass: HomeAssistant,
+    state: dict[str, Any],
+    tile: dict[str, Any],
+    library: SharedMediaLibrary,
 ) -> None:
     """Apply common cross-tile-type extras to a cmnd state payload.
 
-    Currently handles two capabilities that apply to ANY tile type:
+    Currently handles three capabilities that apply to ANY tile type:
 
     1. Background image (OXRS two-step process, step 2): after addImage has
        been sent, tile payloads reference the image by name.
@@ -91,11 +94,17 @@ def _augment_tile_state(
        creating the tile (e.g. "21.4°C", "on" / "off", a last-changed
        sensor). Rendered as "<state> <unit>", trimmed.
 
+    3. State icon: a tile whose icon is half of a bundled pair (door-closed /
+       door-open) shows the half matching its on/off state. Only tiles that
+       report a "state" can swap. The other half reaches the panel alongside
+       the configured icon, in async_push_images_to_panel.
+
     Args:
-        hass:  Home Assistant instance (needed to read the subLabel entity)
-        state: Tile state payload dict (modified in-place)
-        tile:  Tile config dict (may contain background_image_name /
-               sublabel_entity_id)
+        hass:    Home Assistant instance (needed to read the subLabel entity)
+        state:   Tile state payload dict (modified in-place)
+        tile:    Tile config dict (may contain background_image_name /
+                 sublabel_entity_id / icon)
+        library: Shared media library, to confirm both halves of a pair exist
     """
     image_name = tile.get("background_image_name")
     if image_name:
@@ -118,12 +127,25 @@ def _augment_tile_state(
                 f"for S{state.get('screen')}/T{state.get('tile')}"
             )
 
+    icon = tile.get(CONF_ICON)
+    if icon and "state" in state:
+        swapped = library.state_icon(icon, state["state"] == "on")
+        if swapped is not None:
+            state["icon"] = swapped
+
 
 class OxrsPanel:
     """Represents a single OXRS Touch Panel (one MQTT client id)."""
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
-        """Initialise the panel."""
+    def __init__(
+        self, hass: HomeAssistant, entry: ConfigEntry, library: SharedMediaLibrary
+    ) -> None:
+        """Initialise the panel.
+        
+        Args:
+            library: The shared media library (images/icons), reused across
+                     every configured panel - see library.py.
+        """
         self.hass = hass
         self.entry = entry
         self.client_id: str = entry.data["client_id"]
@@ -133,8 +155,7 @@ class OxrsPanel:
         self.esp32_temp: float | None = None
         self._pushed_screens: set[int] = set()
         self._unsubs: list = []
-        # Initialize background image manager
-        self.background_images = BackgroundImageManager(hass, entry.options)
+        self.library = library
 
     @property
     def tiles(self) -> list[dict[str, Any]]:
@@ -350,7 +371,7 @@ class OxrsPanel:
                             temp_tile = {**tile, CONF_ENTITY_ID: action_entity}
                             state = handler["build_state"](self.hass, temp_tile)
                             if state is not None:
-                                _augment_tile_state(self.hass, state, tile)
+                                _augment_tile_state(self.hass, state, tile, self.library)
                                 payload_tiles.append(state)
                 continue
             
@@ -361,7 +382,7 @@ class OxrsPanel:
                 continue
             state = handler["build_state"](self.hass, tile)
             if state is not None:
-                _augment_tile_state(self.hass, state, tile)
+                _augment_tile_state(self.hass, state, tile, self.library)
                 payload_tiles.append(state)
         
         if payload_tiles:
@@ -372,64 +393,92 @@ class OxrsPanel:
             )
 
     async def async_push_images_to_panel(self) -> None:
-        """Send all background images to panel (Step 1: addImage commands).
+        """Send background images AND custom icons actually used on THIS
+        panel (Step 1 of the OXRS two-step process: addImage / addIcon).
         
-        OXRS Firmware Two-Step Process:
-        1. Upload/register images using addImage command ← This method
-        2. Reference images by name in tile configuration (handled in tile state building)
+        Images and icons live in the shared library (library.py), reusable
+        across every configured panel - but each physical panel only needs
+        the ones its OWN tiles actually reference, since RAM is limited and
+        separate per device. This scans self.tiles for:
+        - background_image_name (any tile type)
+        - icon (any tile type) - but only those NOT starting with "_", i.e.
+          not one of the firmware's own built-in icons, which need nothing
+          sent for them at all
+        - the other half of any bundled icon pair among those icons, since
+          _augment_tile_state swaps to it when the tile's state flips
+        and sends an addImage/addIcon command for each unique name found.
         
-        This is called during setup after config push to ensure images are available
-        before tiles try to reference them by name.
-        
-        Images are NOT persistent on the panel - they must be resent each time
-        the panel comes online. This method is called during async_setup().
-        
-        Workflow:
-        - Get all stored background images from manager
-        - Build addImage payload for each
-        - Send via cmnd/ topic with small delays between sends
-        - Panel stores images in memory by name
-        - Tiles can then reference by name
+        This is called during setup after config push to ensure images/icons
+        are available before tiles try to reference them by name. Nothing is
+        persistent on the panel - it must all be resent every time the panel
+        (re)connects. Per the OXRS docs, load order relative to conf/ doesn't
+        matter ("shown after they are loaded, before or after configured"),
+        so this can run either side of the conf/ push.
         """
-        if not self.background_images.list_images():
-            _LOGGER.debug("No background images to send to panel")
+        image_names = {
+            t["background_image_name"]
+            for t in self.tiles
+            if t.get("background_image_name")
+        }
+        icon_names = {
+            t[CONF_ICON]
+            for t in self.tiles
+            if t.get(CONF_ICON) and not t[CONF_ICON].startswith("_")
+        }
+        icon_names |= {
+            partner
+            for name in icon_names
+            if (partner := self.library.paired_icon(name)) is not None
+        }
+
+        if not image_names and not icon_names:
+            _LOGGER.debug("No shared images or icons referenced by this panel's tiles")
             return
-        
-        _LOGGER.debug("Sending background images to panel (Step 1: addImage)...")
-        
+
+        _LOGGER.debug(
+            f"Sending {len(image_names)} image(s) and {len(icon_names)} icon(s) "
+            f"to panel (addImage / addIcon)..."
+        )
+
         try:
-            for image in self.background_images.list_images():
-                image_id = image.get("image_id")
-                if not image_id:
+            for name in image_names:
+                image = self.library.get_image_by_name(name)
+                if image is None:
+                    _LOGGER.warning(f"Referenced image '{name}' not found in shared library")
                     continue
-                
-                # Build addImage payload
-                payload = self.background_images.build_oxrs_add_image_payload(image_id)
+                payload = self.library.build_add_image_payload(image["id"])
                 if not payload:
-                    _LOGGER.warning(f"Failed to build addImage payload for {image_id}")
                     continue
-                
-                # Send to panel
                 _LOGGER.debug(
-                    f"Sending image '{image.get('image_name')}' to panel "
-                    f"(format: {image.get('image_format')}, "
-                    f"size: {image.get('image_size')} bytes)"
+                    f"Sending image '{name}' to panel "
+                    f"(format: {image.get('format')}, size: {image.get('size')} bytes)"
                 )
-                
                 await mqtt.async_publish(
-                    self.hass,
-                    topic_cmnd(self.client_id),
-                    json.dumps(payload),
+                    self.hass, topic_cmnd(self.client_id), json.dumps(payload)
                 )
-                
-                # Small delay between images to avoid overwhelming panel
+                await asyncio.sleep(0.2)  # small delay to avoid overwhelming the panel
+
+            for name in icon_names:
+                icon = self.library.get_icon_by_name(name)
+                if icon is None:
+                    _LOGGER.warning(f"Referenced icon '{name}' not found in shared library")
+                    continue
+                payload = self.library.build_add_icon_payload(icon["id"])
+                if not payload:
+                    continue
+                _LOGGER.debug(f"Sending icon '{name}' to panel (size: {icon.get('size')} bytes)")
+                await mqtt.async_publish(
+                    self.hass, topic_cmnd(self.client_id), json.dumps(payload)
+                )
                 await asyncio.sleep(0.2)
-            
-            _LOGGER.info(f"Sent {len(self.background_images.list_images())} background images to panel")
-            
+
+            _LOGGER.info(
+                f"Sent {len(image_names)} image(s) and {len(icon_names)} icon(s) to panel"
+            )
+
         except Exception as err:
             _LOGGER.error(
-                f"Error sending background images to panel: {err}",
+                f"Error sending images/icons to panel: {err}",
                 exc_info=True
             )
 
@@ -491,7 +540,7 @@ class OxrsPanel:
             
             state = handler["build_state"](self.hass, temp_tile)
             if state is not None:
-                _augment_tile_state(self.hass, state, tile)
+                _augment_tile_state(self.hass, state, tile, self.library)
                 self.hass.async_create_task(
                     mqtt.async_publish(
                         self.hass,
@@ -534,7 +583,7 @@ class OxrsPanel:
         await asyncio.sleep(0.6)
         state = handler["build_state"](self.hass, build_tile)
         if state is not None:
-            _augment_tile_state(self.hass, state, augment_tile)
+            _augment_tile_state(self.hass, state, augment_tile, self.library)
             await mqtt.async_publish(
                 self.hass,
                 topic_cmnd(self.client_id),

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import logging
 from typing import Any
 
@@ -34,8 +36,10 @@ from .const import (
     CONF_TYPE,
     DEFAULT_LAYOUT,
     DOMAIN,
+    LIBRARY_DATA_KEY,
 )
-from .tiles import TILE_TYPES
+from .library import ICON_CATEGORIES, SharedMediaLibrary
+from .tiles import TILE_TYPES, default_icon, eligible_entity_ids, suggested_icons
 
 
 def _client_id_from_topic(topic: str) -> str | None:
@@ -44,6 +48,53 @@ def _client_id_from_topic(topic: str) -> str | None:
     if len(parts) >= 3 and parts[0] == "stat":
         return parts[1]
     return None
+
+
+def _decode_and_validate_base64_image(
+    image_base64: str, *, require_png: bool = False
+) -> tuple[bytes | None, str, str | None]:
+    """Decode and validate a pasted base64 image string.
+
+    Shared by background-image and custom-icon management, since both
+    accept the same "paste from the OXRS Asset Generator" input and follow
+    the same OXRS rules (4KB encoded limit; PNG required for icons).
+
+    Returns (image_bytes, format, error_key). error_key is None on success;
+    image_bytes/format are only meaningful when error_key is None.
+    """
+    import re
+
+    image_base64 = image_base64.strip()
+
+    # Strip a data URI prefix if the user pasted it straight from a browser
+    m = re.match(r"data:image/[^;]+;base64,(.+)", image_base64, re.DOTALL)
+    if m:
+        image_base64 = m.group(1).strip()
+
+    try:
+        image_bytes = base64.b64decode(image_base64)
+    except Exception as err:
+        _LOGGER.error(f"Base64 decode failed: {err}")
+        return None, "", "image_error"
+
+    # OXRS docs: "encoded image should not exceed 4KB" - the base64 string
+    if len(image_base64) > 4096:
+        _LOGGER.warning(f"Base64 string too large: {len(image_base64)} chars (OXRS limit ~4KB)")
+        return None, "", "image_too_large"
+
+    if image_bytes[:4] == bytes([0x89, 0x50, 0x4E, 0x47]):
+        fmt = "png"
+    elif image_bytes[:2] == bytes([0xFF, 0xD8]):
+        fmt = "jpg"
+    elif image_bytes[:3] == b"GIF":
+        fmt = "gif"
+    else:
+        fmt = "png"
+
+    if require_png and fmt != "png":
+        return None, "", "icon_must_be_png"
+
+    return image_bytes, fmt, None
 
 
 class OxrsConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -132,7 +183,48 @@ class OxrsOptionsFlow(OptionsFlow):
         self._new_type: str | None = None
         self._new_screen: int = 1
         self._new_tile_config: dict[str, Any] | None = None
-        
+
+    def _get_library(self) -> SharedMediaLibrary | None:
+        """Return the shared media library, if the integration has finished
+        loading it (it always will have, by the time an options flow for an
+        already-configured panel can be opened)."""
+        return self.hass.data.get(LIBRARY_DATA_KEY)
+
+    def _available_icon_names(self) -> set[str]:
+        """Every icon a tile can use right now: built-ins plus the library."""
+        names = set(BUILTIN_ICONS)
+        library = self._get_library()
+        if library:
+            names.update(icon["name"] for icon in library.list_icons())
+        return names
+
+    def _build_icon_options(self, suggested: list[str] | None = None) -> list[dict[str, str]]:
+        """Combine firmware built-in icons with custom icons from the shared
+        library into one selector option list.
+
+        The tile type's suggested icons lead, labelled as such and not repeated
+        further down. Custom icon labels are prefixed with their category and
+        sorted by it, so each category reads as a block - without relying on
+        disabled separator rows (which don't render consistently across HA
+        frontend versions)."""
+        suggested = suggested or []
+        options = [{"value": name, "label": f"Suggested: {name}"} for name in suggested]
+        options.extend(
+            {"value": name, "label": name} for name in BUILTIN_ICONS if name not in suggested
+        )
+        library = self._get_library()
+        if library:
+            custom = [
+                (ICON_CATEGORIES.get(icon.get("category", ""), "Other"), icon["name"])
+                for icon in library.list_icons()
+                if icon["name"] not in suggested
+            ]
+            options.extend(
+                {"value": name, "label": f"{category_label}: {name}"}
+                for category_label, name in sorted(custom)
+            )
+        return options
+
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -144,6 +236,7 @@ class OxrsOptionsFlow(OptionsFlow):
                 "remove_tile",
                 "rename_screen",
                 "manage_background_images",
+                "manage_custom_icons",
             ],
         )
 
@@ -294,71 +387,6 @@ class OxrsOptionsFlow(OptionsFlow):
             _LOGGER.error(f"Error in async_step_add_tile_type: {err}", exc_info=True)
             return self.async_abort(reason="invalid_type")
 
-    def _get_entity_filter_for_tile_type(self, tile_type: str):
-        """Build entity filter based on tile type and its requirements."""
-        if tile_type == "rgbw":
-            # RGBW: light must have BOTH "hs" and "rgbw" in supported_color_modes
-            def filter_rgbw(entity):
-                if entity.domain != "light":
-                    return False
-                state = self.hass.states.get(entity.entity_id)
-                if not state:
-                    return False
-                color_modes = state.attributes.get("supported_color_modes", [])
-                return "hs" in color_modes and "rgbw" in color_modes
-            return filter_rgbw
-        
-        elif tile_type == "cct":
-            # CCT: light must have color_temp capability
-            def filter_cct(entity):
-                if entity.domain != "light":
-                    return False
-                state = self.hass.states.get(entity.entity_id)
-                if not state:
-                    return False
-                # Check for color_temp_kelvin, color_temp, or color_temp in modes
-                color_modes = state.attributes.get("supported_color_modes", [])
-                has_temp = (
-                    "color_temp_kelvin" in state.attributes or
-                    "color_temp" in state.attributes or
-                    "color_temp" in color_modes
-                )
-                return has_temp
-            return filter_cct
-        
-        elif tile_type == "slider":
-            # Slider: light must have brightness
-            def filter_slider(entity):
-                if entity.domain != "light":
-                    return False
-                state = self.hass.states.get(entity.entity_id)
-                if not state:
-                    return False
-                return "brightness" in state.attributes
-            return filter_slider
-        
-        elif tile_type == "updown":
-            # UpDown: cover entity
-            return lambda entity: entity.domain == "cover"
-        
-        elif tile_type == "thermostat":
-            # Thermostat: climate entity
-            return lambda entity: entity.domain == "climate"
-        
-        elif tile_type == "volume":
-            # Volume: media_player entity
-            return lambda entity: entity.domain == "media_player"
-        
-        elif tile_type == "select":
-            # Select: select or input_select entity
-            return lambda entity: entity.domain in ("select", "input_select")
-        
-        elif tile_type == "button":
-            # Button: switch, scene, script, button, input_button
-            return lambda entity: entity.domain in ("switch", "scene", "script", "button", "input_button")
-        
-        return None
-
     async def async_step_add_tile_details(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -407,6 +435,26 @@ class OxrsOptionsFlow(OptionsFlow):
                 {"value": str(i), "label": f"Position {i}"}
                 for i in free
             ]
+            # Tile types may narrow the picker past the domain, so a door tile
+            # offers door and window contacts rather than every binary_sensor.
+            entity_config: dict[str, Any] = {"domain": definition["domain"]}
+            if definition.get("device_class"):
+                entity_config["device_class"] = definition["device_class"]
+            # Light capability and availability can only be judged by looking at
+            # live state, which the selector cannot do - so pass it the resolved
+            # list instead. Falling back to the plain domain picker when nothing
+            # qualifies beats showing the user an empty dropdown.
+            eligible = eligible_entity_ids(self.hass, definition)
+            if eligible:
+                entity_config["include_entities"] = eligible
+            else:
+                _LOGGER.warning(
+                    "No available entity is compatible with tile type '%s'; "
+                    "falling back to an unfiltered %s picker",
+                    self._new_type,
+                    definition["domain"],
+                )
+            available_icons = self._available_icon_names()
             schema_dict: dict[Any, Any] = {
                 vol.Required(
                     CONF_TILE, default=str(free[0])
@@ -417,14 +465,16 @@ class OxrsOptionsFlow(OptionsFlow):
                     )
                 ),
                 vol.Required(CONF_ENTITY_ID): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain=definition["domain"])
+                    selector.EntitySelectorConfig(**entity_config)
                 ),
                 vol.Optional(CONF_LABEL, default=""): selector.TextSelector(),
                 vol.Optional(
-                    CONF_ICON, default=definition["icon"]
+                    CONF_ICON, default=default_icon(definition, available_icons)
                 ): selector.SelectSelector(
                     selector.SelectSelectorConfig(
-                        options=BUILTIN_ICONS,
+                        options=self._build_icon_options(
+                            suggested_icons(definition, available_icons)
+                        ),
                         mode=selector.SelectSelectorMode.DROPDOWN,
                     )
                 ),
@@ -436,11 +486,16 @@ class OxrsOptionsFlow(OptionsFlow):
             }
             if self._new_type == "indicator":
                 # indicator tile: optional second sensor shown alongside the
-                # primary one (e.g. temperature + humidity in one tile).
+                # primary one (e.g. temperature + humidity in one tile). It
+                # renders through the same numeric-only field, so it gets the
+                # same eligibility list as the primary.
+                secondary_config: dict[str, Any] = {"domain": "sensor"}
+                if eligible:
+                    secondary_config["include_entities"] = eligible
                 schema_dict[
                     vol.Optional(CONF_INDICATOR_SECONDARY_ENTITY_ID)
                 ] = selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain="sensor")
+                    selector.EntitySelectorConfig(**secondary_config)
                 )
             schema = vol.Schema(schema_dict)
             
@@ -482,21 +537,15 @@ class OxrsOptionsFlow(OptionsFlow):
                 new_options[CONF_SCREEN_NAMES] = self._screen_names
                 return self.async_create_entry(title="", data=new_options)
             
-            # Get background image options from manager
-            hub = self.hass.data.get(DOMAIN, {})
+            # Get background image options from the shared library - every
+            # image added on ANY panel is available here, not just this one.
+            library = self._get_library()
             background_images = []
-            
-            if hub:
-                # Try to get images from this entry's panel manager
-                entry_id = self._entry.entry_id if hasattr(self, "_entry") else None
-                if entry_id:
-                    panel = hub.get(entry_id)
-                    if panel and hasattr(panel, "background_images"):
-                        images = panel.background_images.list_images()
-                        background_images = [
-                            {"value": img["image_name"], "label": img["image_name"]}
-                            for img in images
-                        ]
+            if library:
+                background_images = [
+                    {"value": img["name"], "label": img["name"]}
+                    for img in library.list_images()
+                ]
             
             # Add "None" option to skip background image
             image_options = [{"value": "none", "label": "No background image"}]
@@ -617,133 +666,245 @@ class OxrsOptionsFlow(OptionsFlow):
     async def async_step_manage_background_images(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Add a background image — paste base64 from OXRS Asset Generator."""
-        import re as _re, base64 as _b64, hashlib as _hl
+        """Menu: add a new background image, or delete an existing one."""
+        return self.async_show_menu(
+            step_id="manage_background_images",
+            menu_options=["add_background_image", "delete_background_image"],
+        )
+
+    async def async_step_add_background_image(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Add a background image to the shared library - paste base64 from
+        the OXRS Asset Generator. Available to every configured panel."""
         try:
             if user_input is not None:
-                image_name   = user_input.get("image_name",   "").strip()
+                image_name = user_input.get("image_name", "").strip()
                 image_base64 = user_input.get("image_base64", "").strip()
 
                 if not image_name:
                     return self.async_show_form(
-                        step_id="manage_background_images",
-                        data_schema=self._build_background_images_schema(),
+                        step_id="add_background_image",
+                        data_schema=self._build_add_media_schema(),
                         errors={"base": "no_name"},
                     )
                 if not image_base64:
                     return self.async_show_form(
-                        step_id="manage_background_images",
-                        data_schema=self._build_background_images_schema(),
+                        step_id="add_background_image",
+                        data_schema=self._build_add_media_schema(),
                         errors={"base": "no_file"},
                     )
-
-                # Strip data URI prefix if user pasted from browser
-                m = _re.match(r"data:image/[^;]+;base64,(.+)", image_base64, _re.DOTALL)
-                if m:
-                    image_base64 = m.group(1).strip()
-
-                # Validate base64 — lenient decode, whitespace already stripped
-                try:
-                    image_bytes = _b64.b64decode(image_base64)
-                except Exception as decode_err:
-                    _LOGGER.error(f"Base64 decode failed: {decode_err}")
-                    return self.async_show_form(
-                        step_id="manage_background_images",
-                        data_schema=self._build_background_images_schema(),
-                        errors={"base": "image_error"},
-                    )
-
-                _LOGGER.debug(
-                    f"Image input: base64_len={len(image_base64)} chars, "
-                    f"decoded={len(image_bytes)} bytes"
-                )
-
-                # OXRS docs: "encoded image should not exceed 4KB" = the base64 string
-                if len(image_base64) > 4096:
-                    _LOGGER.warning(
-                        f"Base64 string too large: {len(image_base64)} chars "
-                        f"(OXRS limit ~4KB). Use https://oxrs.io/tools/asset-generator.html"
-                    )
-                    return self.async_show_form(
-                        step_id="manage_background_images",
-                        data_schema=self._build_background_images_schema(),
-                        errors={"base": "image_too_large"},
-                    )
-
-                # OXRS forbids names starting with underscore
                 if image_name.startswith("_"):
                     return self.async_show_form(
-                        step_id="manage_background_images",
-                        data_schema=self._build_background_images_schema(),
+                        step_id="add_background_image",
+                        data_schema=self._build_add_media_schema(),
                         errors={"base": "invalid_image_name"},
                     )
 
-                # Detect format from magic bytes
-                if image_bytes[:4] == bytes([0x89, 0x50, 0x4e, 0x47]):
-                    fmt = "png"
-                elif image_bytes[:2] == bytes([0xff, 0xd8]):
-                    fmt = "jpg"
-                elif image_bytes[:3] == b"GIF":
-                    fmt = "gif"
-                else:
-                    fmt = "png"
-
-                image_id = _hl.md5(image_base64.encode()).hexdigest()[:12]
-
-                entry_id = self._entry.entry_id
-                _LOGGER.debug(
-                    f"Looking up panel for entry_id={entry_id!r}, "
-                    f"hass.data[DOMAIN] keys={list(self.hass.data.get(DOMAIN, {}).keys())}"
-                )
-                panel = self.hass.data.get(DOMAIN, {}).get(entry_id)
-                if not panel or not hasattr(panel, "background_images"):
-                    _LOGGER.error(
-                        f"Cannot access panel for entry {entry_id}. "
-                        f"panel={panel}, has background_images={hasattr(panel, 'background_images') if panel else 'N/A'}"
+                image_bytes, fmt, error_key = _decode_and_validate_base64_image(image_base64)
+                if error_key:
+                    return self.async_show_form(
+                        step_id="add_background_image",
+                        data_schema=self._build_add_media_schema(),
+                        errors={"base": error_key},
                     )
+
+                library = self._get_library()
+                if library is None:
+                    _LOGGER.error("Shared media library not available")
                     return self.async_abort(reason="invalid_format")
 
-                _LOGGER.debug(f"Calling add_image: id={image_id}, name={image_name!r}, fmt={fmt}, size={len(image_bytes)}")
-                success = await panel.background_images.add_image(
-                    image_id, image_name, image_bytes, fmt
-                )
-                _LOGGER.debug(f"add_image returned: {success}")
+                image_id = hashlib.md5(image_base64.encode()).hexdigest()[:12]
+                success = await library.add_image(image_id, image_name, image_bytes, fmt)
                 if not success:
                     return self.async_show_form(
-                        step_id="manage_background_images",
-                        data_schema=self._build_background_images_schema(),
+                        step_id="add_background_image",
+                        data_schema=self._build_add_media_schema(),
                         errors={"base": "image_error"},
                     )
 
-                from .const import CONF_BACKGROUND_IMAGES
-                new_options = dict(self._entry.options)
-                new_options[CONF_BACKGROUND_IMAGES] = panel.background_images._images
-                self.hass.config_entries.async_update_entry(
-                    self._entry, options=new_options
-                )
-                _LOGGER.info(
-                    f"Background image saved: '{image_name}' "
-                    f"(id={image_id}, {len(image_bytes)} B, {fmt})"
-                )
                 return self.async_abort(reason="image_uploaded")
 
             return self.async_show_form(
-                step_id="manage_background_images",
-                data_schema=self._build_background_images_schema(),
+                step_id="add_background_image",
+                data_schema=self._build_add_media_schema(),
             )
         except Exception as err:
-            _LOGGER.error(
-                f"Error in async_step_manage_background_images: {err}", exc_info=True
-            )
+            _LOGGER.error(f"Error in async_step_add_background_image: {err}", exc_info=True)
             return self.async_abort(reason="invalid_format")
 
-    def _build_background_images_schema(self) -> vol.Schema:
-        """Build schema for background image management — paste base64 string."""
+    async def async_step_delete_background_image(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Delete a background image from the shared library.
+
+        Note: any tile (on any panel) still referencing this image by name
+        will simply stop receiving it on the next config push - it degrades
+        gracefully rather than breaking, but won't show a background until
+        a new one is chosen for that tile.
+        """
+        library = self._get_library()
+        images = library.list_images() if library else []
+        if not images:
+            return self.async_abort(reason="no_images")
+
+        if user_input is not None:
+            await library.delete_image(user_input["image_id"])
+            return self.async_abort(reason="image_deleted")
+
+        options = [{"value": img["id"], "label": img["name"]} for img in images]
+        schema = vol.Schema(
+            {
+                vol.Required("image_id"): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=options, mode=selector.SelectSelectorMode.LIST
+                    )
+                )
+            }
+        )
+        return self.async_show_form(step_id="delete_background_image", data_schema=schema)
+
+    async def async_step_manage_custom_icons(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Menu: add a new custom icon, or delete an existing one."""
+        return self.async_show_menu(
+            step_id="manage_custom_icons",
+            menu_options=["add_custom_icon", "delete_custom_icon"],
+        )
+
+    async def async_step_add_custom_icon(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Add a custom icon to the shared library - paste base64 PNG from
+        the OXRS Asset Generator (change addImage to addIcon in its output).
+        Available to every configured panel, grouped by category in the
+        icon picker."""
+        try:
+            if user_input is not None:
+                icon_name = user_input.get("icon_name", "").strip()
+                icon_base64 = user_input.get("icon_base64", "").strip()
+                category = user_input.get("category", "misc")
+
+                if not icon_name:
+                    return self.async_show_form(
+                        step_id="add_custom_icon",
+                        data_schema=self._build_add_icon_schema(),
+                        errors={"base": "no_name"},
+                    )
+                if not icon_base64:
+                    return self.async_show_form(
+                        step_id="add_custom_icon",
+                        data_schema=self._build_add_icon_schema(),
+                        errors={"base": "no_file"},
+                    )
+                if icon_name.startswith("_"):
+                    return self.async_show_form(
+                        step_id="add_custom_icon",
+                        data_schema=self._build_add_icon_schema(),
+                        errors={"base": "invalid_image_name"},
+                    )
+
+                icon_bytes, _fmt, error_key = _decode_and_validate_base64_image(
+                    icon_base64, require_png=True
+                )
+                if error_key:
+                    return self.async_show_form(
+                        step_id="add_custom_icon",
+                        data_schema=self._build_add_icon_schema(),
+                        errors={"base": error_key},
+                    )
+
+                library = self._get_library()
+                if library is None:
+                    _LOGGER.error("Shared media library not available")
+                    return self.async_abort(reason="invalid_format")
+
+                icon_id = hashlib.md5(icon_base64.encode()).hexdigest()[:12]
+                success = await library.add_icon(icon_id, icon_name, icon_bytes, category)
+                if not success:
+                    return self.async_show_form(
+                        step_id="add_custom_icon",
+                        data_schema=self._build_add_icon_schema(),
+                        errors={"base": "image_error"},
+                    )
+
+                return self.async_abort(reason="icon_uploaded")
+
+            return self.async_show_form(
+                step_id="add_custom_icon",
+                data_schema=self._build_add_icon_schema(),
+            )
+        except Exception as err:
+            _LOGGER.error(f"Error in async_step_add_custom_icon: {err}", exc_info=True)
+            return self.async_abort(reason="invalid_format")
+
+    async def async_step_delete_custom_icon(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Delete a custom icon from the shared library."""
+        library = self._get_library()
+        icons = library.list_icons() if library else []
+        if not icons:
+            return self.async_abort(reason="no_icons")
+
+        if user_input is not None:
+            await library.delete_icon(user_input["icon_id"])
+            return self.async_abort(reason="icon_deleted")
+
+        # Bundled icons are marked because deleting one is sticky: it won't be
+        # re-added on restart, unlike a user upload of the same name.
+        options = [
+            {
+                "value": icon["id"],
+                "label": (
+                    f"{ICON_CATEGORIES.get(icon.get('category', ''), 'Other')}: {icon['name']}"
+                    + (" (bundled)" if icon.get("bundled") else "")
+                ),
+            }
+            for icon in sorted(
+                icons,
+                key=lambda i: (ICON_CATEGORIES.get(i.get("category", ""), "Other"), i["name"]),
+            )
+        ]
+        schema = vol.Schema(
+            {
+                vol.Required("icon_id"): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=options, mode=selector.SelectSelectorMode.LIST
+                    )
+                )
+            }
+        )
+        return self.async_show_form(step_id="delete_custom_icon", data_schema=schema)
+
+    def _build_add_media_schema(self) -> vol.Schema:
+        """Schema for pasting a background image's base64 string."""
         return vol.Schema(
             {
                 vol.Required("image_name"): selector.TextSelector(),
                 vol.Required("image_base64"): selector.TextSelector(
                     selector.TextSelectorConfig(multiline=True)
+                ),
+            }
+        )
+
+    def _build_add_icon_schema(self) -> vol.Schema:
+        """Schema for pasting a custom icon's base64 PNG string + category."""
+        category_options = [
+            {"value": key, "label": label} for key, label in ICON_CATEGORIES.items()
+        ]
+        return vol.Schema(
+            {
+                vol.Required("icon_name"): selector.TextSelector(),
+                vol.Required("icon_base64"): selector.TextSelector(
+                    selector.TextSelectorConfig(multiline=True)
+                ),
+                vol.Required("category", default="misc"): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=category_options,
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
                 ),
             }
         )
