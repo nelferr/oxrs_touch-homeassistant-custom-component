@@ -57,6 +57,13 @@
           "indicator_secondary_entity_id": "Secondary sensor (optional, indicator tiles only) - shown alongside the primary value"
         }
       },
+      "add_tile_playlists": {
+        "title": "Add a tile — choose playlists",
+        "description": "Tick up to {max} Music Assistant playlists. They appear in the tile's list on the panel, and choosing one replaces the player's queue with it.",
+        "data": {
+          "playlists": "Playlists"
+        }
+      },
       "add_tile_background": {
         "title": "Add background image (optional)",
         "description": "Select a background image for {tile}. {images_available}.",
@@ -149,7 +156,9 @@
       "no_images": "There are no background images in the shared library yet.",
       "icon_uploaded": "Custom icon saved to the shared library - available on every panel!",
       "icon_deleted": "Custom icon deleted from the shared library.",
-      "no_icons": "There are no custom icons in the shared library yet."
+      "no_icons": "There are no custom icons in the shared library yet.",
+      "music_assistant_unavailable": "Couldn't read the Music Assistant library for this player. Check that Music Assistant is running, then try again.",
+      "no_playlists": "The Music Assistant library has no playlists yet. Add some in Music Assistant, then try again."
     },
     "error": {
       "no_name": "Please enter a name.",
@@ -157,7 +166,9 @@
       "image_error": "Invalid base64 string. Copy the imageBase64 value from the OXRS Asset Generator output.",
       "image_too_large": "Too large - the encoded string must stay under 4 KB. Use the OXRS Asset Generator (https://oxrs.io/tools/asset-generator.html) to resize it first.",
       "invalid_image_name": "Name cannot start with an underscore (reserved for built-ins).",
-      "icon_must_be_png": "Custom icons must be PNG format."
+      "icon_must_be_png": "Custom icons must be PNG format.",
+      "no_playlists_selected": "Choose at least one playlist.",
+      "too_many_playlists": "Choose at most 6 playlists."
     }
   }
 }

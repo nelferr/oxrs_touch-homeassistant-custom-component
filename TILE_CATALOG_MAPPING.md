@@ -72,8 +72,9 @@ hides the icon, empty restores it**. Follow the code, not the docs.
 
 1. `tiles.py` — add a `TILE_TYPES` entry: `style`, `domain`, `icon`, `label`,
    `config_extra`, `build_state`, `handle_event`, and optionally
-   `device_class` to narrow the picker past the domain and `suggested_icons`
-   to lead the icon picker.
+   `device_class` to narrow the picker past the domain, `integration` to tie
+   the type to one integration (offered only while it's loaded), and
+   `suggested_icons` to lead the icon picker.
 2. If the card needs new artwork, add it to `oxrs_touchpanel/bundled_icons.json`
    (and to `ICON_STATE_PAIRS` in `library.py` if it pictures an on/off pair).
 3. Nothing else. `hub.py` drives everything generically off the registry, and
@@ -206,7 +207,7 @@ Two things the registry does **not** support yet, needed by a few cards below:
 | Weather | `indicator` | weather | new, forecast needs response API |
 | Camera | `backgroundImage` | camera, image | experimental, 4 KB limit |
 | Wifi Sharing | `backgroundImage` (QR) | none | new, feasible |
-| Media | `buttonPrevNext`, `remote`, … | media_player | extend `volume` heavily |
+| Media | `buttonPrevNext`, `dropDown`, `remote`, … | media_player | ✅ transport + playlists built; rest open |
 | Climate | `thermostat` + `dropDown` | climate | done, add mode tiles |
 | Internal Switches | — | — | **N/A** — TP32 has no relays |
 | Screen Lock | `keyPad` + device conf | none | new, panel-level |
@@ -457,8 +458,8 @@ The largest card. Build as separate tile types sharing one entity filter:
 
 | Mode | Style | Logic |
 | :--- | :--- | :--- |
-| Play / Pause | `button` | `state` from `playing`; tap → `media_play_pause` |
-| Prev / Next | `buttonPrevNext` | `type == "prev"` / `"next"` → `media_previous_track` / `media_next_track` |
+| Play / Pause + Prev / Next | `buttonPrevNext` | ✅ built as `transport` — see below |
+| Playlists | `dropDown` | ✅ built as `playlists` — see below |
 | Volume (step) | `buttonUpDown` | existing `volume` type, unchanged |
 | Volume (slider) | `buttonSlider` | `level` = `volume_level * 100` → `volume_set` |
 | Track position | any + `level` | `level` = `media_position / media_duration`; `subLabel` = `"1:23 / 3:45"` |
@@ -467,8 +468,34 @@ The largest card. Build as separate tile types sharing one entity filter:
 | Source / content | `dropDown` | existing `select` type already covers `source_list` |
 | Remote (d-pad) | `remote` | opens the firmware remote screen |
 
+**`transport`** — one tile for the whole queue. Tapping the tile body sends
+`media_play_pause`; the arrows send `media_previous_track` /
+`media_next_track`. Single taps only, so holding an arrow can't skip through the
+queue. The tile lights while playing and shows `media_title` as its subLabel.
+With the built-in `_play` or `_pause` icon it shows what a tap will do (pause
+while playing); any other icon is left alone. The picker offers players with
+NEXT_TRACK or PREVIOUS_TRACK.
+
+**`playlists`** — a `dropDown` of up to `MAX_PLAYLISTS` (6) Music Assistant
+playlists. When the tile is added, a config-flow step calls
+`music_assistant.get_library` (`media_type: playlist`, ordered by name) using the
+chosen player's config entry, and the user ticks which to list. Picking one on
+the panel calls `music_assistant.play_media` with `enqueue: replace`. The type is
+only offered while Music Assistant is loaded, and its picker is limited to
+Music Assistant players via the selector's `integration` filter.
+
+- **Target the Music Assistant entity, not a native player entity** (e.g. the
+  BluOS integration's). Music Assistant owns the queue; skipping on the device's
+  own entity bypasses it.
+- **The playlist tile can't read back what's playing.** Music Assistant reports
+  the current track, not the playlist it came from, so the tile remembers the
+  last playlist it started per player (in `hass.data`), which resets when HA
+  restarts.
+- **The playlist list is fixed when the tile is added.** A new playlist appears
+  after the tile is removed and re-added — there is no edit-tile flow.
 - **`buttonPrevNext`** is purpose-built for this — the firmware even documents it
-  with a `_music` icon and "Skip track" label.
+  with a `_music` icon and "Skip track" label. Its `prev` / `next` event names
+  come from the OXRS docs and are not yet verified on hardware.
 - **`remote`** returns `type` ∈ `home/info/back/list/ok/up/down/left/right`. Map
   to HA's `remote.send_command` for a bound `remote` entity, or to
   `media_player` equivalents for players that expose them (Kodi, Android TV).
