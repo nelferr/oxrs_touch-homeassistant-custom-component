@@ -10,11 +10,14 @@ from typing import Any
 import voluptuous as vol
 from homeassistant.config_entries import (
     ConfigEntry,
+    ConfigEntryState,
     ConfigFlow,
     ConfigFlowResult,
     OptionsFlow,
 )
 from homeassistant.core import callback
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import selector
 from homeassistant.helpers.service_info.mqtt import MqttServiceInfo
 
@@ -28,6 +31,7 @@ from .const import (
     CONF_INDICATOR_SECONDARY_ENTITY_ID,
     CONF_LABEL,
     CONF_NAME,
+    CONF_PLAYLISTS,
     CONF_SCREEN,
     CONF_SCREEN_NAMES,
     CONF_SUBLABEL_ENTITY_ID,
@@ -37,9 +41,21 @@ from .const import (
     DEFAULT_LAYOUT,
     DOMAIN,
     LIBRARY_DATA_KEY,
+    MAX_PLAYLISTS,
 )
-from .library import ICON_CATEGORIES, SharedMediaLibrary
-from .tiles import TILE_TYPES, default_icon, eligible_entity_ids, suggested_icons
+from .library import (
+    ICON_CATEGORIES,
+    MAX_ENCODED_SIZE,
+    MAX_ENCODED_SIZE_HARD,
+    SharedMediaLibrary,
+)
+from .tiles import (
+    TILE_TYPES,
+    default_icon,
+    eligible_entity_ids,
+    playlists_from_library,
+    suggested_icons,
+)
 
 
 def _client_id_from_topic(topic: str) -> str | None:
@@ -77,10 +93,23 @@ def _decode_and_validate_base64_image(
         _LOGGER.error(f"Base64 decode failed: {err}")
         return None, "", "image_error"
 
-    # OXRS docs: "encoded image should not exceed 4KB" - the base64 string
-    if len(image_base64) > 4096:
-        _LOGGER.warning(f"Base64 string too large: {len(image_base64)} chars (OXRS limit ~4KB)")
+    # OXRS docs: "encoded image should not exceed 4KB - TBC". Over that is
+    # allowed but flagged, since the real ceiling is only knowable on hardware
+    # and 4KB is too little for a photographic image at tile size.
+    if len(image_base64) > MAX_ENCODED_SIZE_HARD:
+        _LOGGER.warning(
+            "Base64 string too large: %d chars (hard limit %d)",
+            len(image_base64),
+            MAX_ENCODED_SIZE_HARD,
+        )
         return None, "", "image_too_large"
+    if len(image_base64) > MAX_ENCODED_SIZE:
+        _LOGGER.warning(
+            "Base64 string is %d chars, above the ~%d the OXRS docs call safe. "
+            "The panel may ignore the image or restart.",
+            len(image_base64),
+            MAX_ENCODED_SIZE,
+        )
 
     if image_bytes[:4] == bytes([0x89, 0x50, 0x4E, 0x47]):
         fmt = "png"
@@ -183,6 +212,9 @@ class OxrsOptionsFlow(OptionsFlow):
         self._new_type: str | None = None
         self._new_screen: int = 1
         self._new_tile_config: dict[str, Any] | None = None
+        # Playlists fetched from Music Assistant for the tile being added, kept
+        # so a validation error re-shows the form without fetching again.
+        self._playlist_choices: list[dict[str, str]] | None = None
 
     def _get_library(self) -> SharedMediaLibrary | None:
         """Return the shared media library, if the integration has finished
@@ -224,6 +256,40 @@ class OxrsOptionsFlow(OptionsFlow):
                 for category_label, name in sorted(custom)
             )
         return options
+
+    def _integration_loaded(self, domain: str) -> bool:
+        return any(
+            entry.state is ConfigEntryState.LOADED
+            for entry in self.hass.config_entries.async_entries(domain)
+        )
+
+    async def _async_fetch_playlists(self, entity_id: str) -> list[dict[str, str]] | None:
+        """Every playlist in the Music Assistant library behind a player.
+
+        Returns None when the library can't be reached, and an empty list when
+        it simply has no playlists, so the two get different messages.
+        """
+        registry_entry = er.async_get(self.hass).async_get(entity_id)
+        if registry_entry is None or registry_entry.config_entry_id is None:
+            _LOGGER.warning("%s has no Music Assistant config entry", entity_id)
+            return None
+        try:
+            response = await self.hass.services.async_call(
+                "music_assistant",
+                "get_library",
+                {
+                    "config_entry_id": registry_entry.config_entry_id,
+                    "media_type": "playlist",
+                    "order_by": "name",
+                    "limit": 500,
+                },
+                blocking=True,
+                return_response=True,
+            )
+        except HomeAssistantError as err:
+            _LOGGER.warning("Could not list Music Assistant playlists: %s", err)
+            return None
+        return playlists_from_library(response)
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -357,9 +423,14 @@ class OxrsOptionsFlow(OptionsFlow):
                 _LOGGER.debug(f"User chose tile type: {self._new_type}")
                 return await self.async_step_add_tile_details()
 
+            # A type tied to an integration (Music Assistant playlists) is only
+            # offered while that integration is loaded; otherwise its entity
+            # picker would be empty.
             type_options = [
                 {"value": key, "label": defn["label"]}
                 for key, defn in TILE_TYPES.items()
+                if not defn.get("integration")
+                or self._integration_loaded(defn["integration"])
             ]
             
             _LOGGER.debug(f"Available tile types: {[opt['value'] for opt in type_options]}")
@@ -428,6 +499,8 @@ class OxrsOptionsFlow(OptionsFlow):
                     secondary_entity_id = user_input.get(CONF_INDICATOR_SECONDARY_ENTITY_ID)
                     if secondary_entity_id:
                         self._new_tile_config[CONF_INDICATOR_SECONDARY_ENTITY_ID] = secondary_entity_id
+                if self._new_type == "playlists":
+                    return await self.async_step_add_tile_playlists()
                 # Go to background image selection step
                 return await self.async_step_add_tile_background()
 
@@ -440,6 +513,8 @@ class OxrsOptionsFlow(OptionsFlow):
             entity_config: dict[str, Any] = {"domain": definition["domain"]}
             if definition.get("device_class"):
                 entity_config["device_class"] = definition["device_class"]
+            if definition.get("integration"):
+                entity_config["integration"] = definition["integration"]
             # Light capability and availability can only be judged by looking at
             # live state, which the selector cannot do - so pass it the resolved
             # list instead. Falling back to the plain domain picker when nothing
@@ -511,6 +586,56 @@ class OxrsOptionsFlow(OptionsFlow):
         except Exception as err:
             _LOGGER.error(f"Error in async_step_add_tile_details: {err}", exc_info=True)
             return self.async_abort(reason="invalid_details")
+
+    async def async_step_add_tile_playlists(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Step 2b, playlist tiles only: pick the playlists the panel lists."""
+        assert self._new_tile_config is not None
+
+        if self._playlist_choices is None:
+            choices = await self._async_fetch_playlists(self._new_tile_config[CONF_ENTITY_ID])
+            if choices is None:
+                return self.async_abort(reason="music_assistant_unavailable")
+            if not choices:
+                return self.async_abort(reason="no_playlists")
+            self._playlist_choices = choices
+
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            chosen = user_input.get(CONF_PLAYLISTS) or []
+            if not chosen:
+                errors["base"] = "no_playlists_selected"
+            elif len(chosen) > MAX_PLAYLISTS:
+                errors["base"] = "too_many_playlists"
+            else:
+                by_uri = {p["uri"]: p for p in self._playlist_choices}
+                self._new_tile_config[CONF_PLAYLISTS] = [
+                    by_uri[uri] for uri in chosen if uri in by_uri
+                ]
+                self._playlist_choices = None
+                return await self.async_step_add_tile_background()
+
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_PLAYLISTS): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            {"value": p["uri"], "label": p["name"]}
+                            for p in self._playlist_choices
+                        ],
+                        multiple=True,
+                        mode=selector.SelectSelectorMode.LIST,
+                    )
+                ),
+            }
+        )
+        return self.async_show_form(
+            step_id="add_tile_playlists",
+            data_schema=schema,
+            errors=errors,
+            description_placeholders={"max": str(MAX_PLAYLISTS)},
+        )
 
     async def async_step_add_tile_background(
         self, user_input: dict[str, Any] | None = None

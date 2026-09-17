@@ -72,8 +72,9 @@ hides the icon, empty restores it**. Follow the code, not the docs.
 
 1. `tiles.py` — add a `TILE_TYPES` entry: `style`, `domain`, `icon`, `label`,
    `config_extra`, `build_state`, `handle_event`, and optionally
-   `device_class` to narrow the picker past the domain and `suggested_icons`
-   to lead the icon picker.
+   `device_class` to narrow the picker past the domain, `integration` to tie
+   the type to one integration (offered only while it's loaded), and
+   `suggested_icons` to lead the icon picker.
 2. If the card needs new artwork, add it to `oxrs_touchpanel/bundled_icons.json`
    (and to `ICON_STATE_PAIRS` in `library.py` if it pictures an on/off pair).
 3. Nothing else. `hub.py` drives everything generically off the registry, and
@@ -206,7 +207,7 @@ Two things the registry does **not** support yet, needed by a few cards below:
 | Weather | `indicator` | weather | new, forecast needs response API |
 | Camera | `backgroundImage` | camera, image | experimental, 4 KB limit |
 | Wifi Sharing | `backgroundImage` (QR) | none | new, feasible |
-| Media | `buttonPrevNext`, `remote`, … | media_player | extend `volume` heavily |
+| Media | `buttonPrevNext`, `dropDown`, `remote`, … | media_player | ✅ transport + playlists built; rest open |
 | Climate | `thermostat` + `dropDown` | climate | done, add mode tiles |
 | Internal Switches | — | — | **N/A** — TP32 has no relays |
 | Screen Lock | `keyPad` + device conf | none | new, panel-level |
@@ -437,10 +438,37 @@ Same as above with a user-chosen tz (`zoneinfo`), `label` = city name.
 
 - Pipeline: `camera.async_get_image` → downscale → PNG → base64 → `addImage`
   → tile references it by name. `library.py` already has the second half.
-- **Hard limit:** base64 payload must stay under **4096 bytes** or the panel
-  crashes (`MAX_ENCODED_SIZE` in `library.py`). That's ~3 KB of PNG — a heavily
-  downscaled, low-colour thumbnail. Needs a Pillow dependency for the resize.
+- **The 4 KB limit is softer than the docs claim** — see "Image size budget"
+  below. Needs Pillow for the resize, which HA already ships.
 - Treat as a "latest snapshot" tile refreshed on a slow interval, not a stream.
+
+### Image size budget (measured, not documented)
+
+The OXRS docs say an encoded image "should not exceed 4KB to avoid crashes -
+TBC", and `library.py` enforced that. It buys about 12 colours at tile size, so
+photographs come out badly posterised. Measured against a panel instead:
+
+| Encoded size | 140px result | Outcome |
+| ---: | :--- | :--- |
+| 3.7 KB | 3 colours | draws, unusable for photos |
+| 8 KB | 8 colours | draws |
+| 16.3 KB | 58 colours | draws, "decent" |
+| 25.7 KB | 256 colours | draws, indistinguishable from the original |
+| 58.4 KB | full colour | draws |
+| 48.6 KB | 300px (2x2 tile) | draws |
+| 63.8 KB | 460px (full screen) | draws |
+
+So `MAX_ENCODED_SIZE` is now a warning threshold, with a hard refusal at 64 KB.
+
+**Caveat: these were run on the PC emulator, not a physical panel.** The
+emulator has none of the ESP32's RAM or MQTT buffer limits, so treat every row
+above 4 KB as unconfirmed until the same ladder runs on hardware. Anything built
+on this should take the byte budget as a setting rather than baking one in.
+
+PNG costs rise steeply with pixel size: at 48 KB a 300px image affords only 30
+colours, and at 64 KB a 460px one just 11. A good-looking full-screen image
+would need well over 100 KB. JPEG would change that entirely, but the docs
+require PNG for backgrounds and the panel appears to agree.
 
 ### 24. Wifi Sharing
 **New** · **Style** any + `backgroundImage` · no entity
@@ -457,8 +485,8 @@ The largest card. Build as separate tile types sharing one entity filter:
 
 | Mode | Style | Logic |
 | :--- | :--- | :--- |
-| Play / Pause | `button` | `state` from `playing`; tap → `media_play_pause` |
-| Prev / Next | `buttonPrevNext` | `type == "prev"` / `"next"` → `media_previous_track` / `media_next_track` |
+| Play / Pause + Prev / Next | `buttonPrevNext` | ✅ built as `transport` — see below |
+| Playlists | `dropDown` | ✅ built as `playlists` — see below |
 | Volume (step) | `buttonUpDown` | existing `volume` type, unchanged |
 | Volume (slider) | `buttonSlider` | `level` = `volume_level * 100` → `volume_set` |
 | Track position | any + `level` | `level` = `media_position / media_duration`; `subLabel` = `"1:23 / 3:45"` |
@@ -467,8 +495,34 @@ The largest card. Build as separate tile types sharing one entity filter:
 | Source / content | `dropDown` | existing `select` type already covers `source_list` |
 | Remote (d-pad) | `remote` | opens the firmware remote screen |
 
+**`transport`** — one tile for the whole queue. Tapping the tile body sends
+`media_play_pause`; the arrows send `media_previous_track` /
+`media_next_track`. Single taps only, so holding an arrow can't skip through the
+queue. The tile lights while playing and shows `media_title` as its subLabel.
+With the built-in `_play` or `_pause` icon it shows what a tap will do (pause
+while playing); any other icon is left alone. The picker offers players with
+NEXT_TRACK or PREVIOUS_TRACK.
+
+**`playlists`** — a `dropDown` of up to `MAX_PLAYLISTS` (6) Music Assistant
+playlists. When the tile is added, a config-flow step calls
+`music_assistant.get_library` (`media_type: playlist`, ordered by name) using the
+chosen player's config entry, and the user ticks which to list. Picking one on
+the panel calls `music_assistant.play_media` with `enqueue: replace`. The type is
+only offered while Music Assistant is loaded, and its picker is limited to
+Music Assistant players via the selector's `integration` filter.
+
+- **Target the Music Assistant entity, not a native player entity** (e.g. the
+  BluOS integration's). Music Assistant owns the queue; skipping on the device's
+  own entity bypasses it.
+- **The playlist tile can't read back what's playing.** Music Assistant reports
+  the current track, not the playlist it came from, so the tile remembers the
+  last playlist it started per player (in `hass.data`), which resets when HA
+  restarts.
+- **The playlist list is fixed when the tile is added.** A new playlist appears
+  after the tile is removed and re-added — there is no edit-tile flow.
 - **`buttonPrevNext`** is purpose-built for this — the firmware even documents it
-  with a `_music` icon and "Skip track" label.
+  with a `_music` icon and "Skip track" label. Its `prev` / `next` event names
+  are confirmed working, as is the playlist dropdown (tested on the emulator).
 - **`remote`** returns `type` ∈ `home/info/back/list/ok/up/down/left/right`. Map
   to HA's `remote.send_command` for a bound `remote` entity, or to
   `media_player` equivalents for players that expose them (Kodi, Android TV).

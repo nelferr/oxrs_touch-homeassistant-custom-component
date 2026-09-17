@@ -42,6 +42,12 @@ CONF_SUBLABEL_ENTITY_ID = "sublabel_entity_id"
 # (e.g. temperature + humidity in one tile)
 CONF_INDICATOR_SECONDARY_ENTITY_ID = "indicator_secondary_entity_id"
 
+# playlists tile: the Music Assistant playlists offered in its dropdown, as
+# [{"name": ..., "uri": ...}] in panel order. Capped so the panel's list stays
+# short enough to scan without scrolling.
+CONF_PLAYLISTS = "playlists"
+MAX_PLAYLISTS = 6
+
 # Per-tile keys (new - flexible actions)
 CONF_ACTIONS = "actions"
 CONF_ACTION_SEQUENCE = "sequence"

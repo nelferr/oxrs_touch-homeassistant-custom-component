@@ -5,6 +5,8 @@ Each tile type declares:
   * ``domain`` - the HA entity domain the tile binds to (drives the picker).
   * ``device_class`` - optional; narrows the picker beyond the domain, so a
     door tile only offers door/window contacts rather than every binary_sensor.
+  * ``integration`` - optional; only offer entities from this integration, and
+    only offer the tile type at all while that integration is loaded.
   * ``color_modes`` - optional; light colour modes the tile can drive, used by
     ``eligible_entity_ids`` to keep incapable bulbs out of the picker.
   * ``features`` - optional; ``{domain: bitmask}`` of entity features the tile
@@ -33,9 +35,12 @@ from homeassistant.core import HomeAssistant
 
 from .const import (
     CONF_ENTITY_ID,
+    CONF_ICON,
     CONF_INDICATOR_SECONDARY_ENTITY_ID,
+    CONF_PLAYLISTS,
     CONF_SCREEN,
     CONF_TILE,
+    DOMAIN,
     KELVIN_MAX,
     KELVIN_MIN,
 )
@@ -47,6 +52,7 @@ class TileType(TypedDict):
     style: str
     domain: str | list[str]
     device_class: NotRequired[str | list[str]]
+    integration: NotRequired[str]
     color_modes: NotRequired[list[str]]
     features: NotRequired[dict[str, int]]
     numeric_state: NotRequired[bool]
@@ -737,6 +743,98 @@ def _text_build_state(hass: HomeAssistant, tile: dict[str, Any]) -> dict[str, An
     }
 
 
+# ─── transport → media_player (tap = play/pause, arrows = prev/next track) ──
+_PLAY_PAUSE_ICONS = ("_play", "_pause")
+_TRANSPORT_SERVICES = {
+    "button": "media_play_pause",
+    "prev": "media_previous_track",
+    "next": "media_next_track",
+}
+
+
+def _transport_build_state(hass: HomeAssistant, tile: dict[str, Any]) -> dict[str, Any]:
+    state = hass.states.get(tile[CONF_ENTITY_ID])
+    playing = state is not None and state.state == "playing"
+    payload: dict[str, Any] = {
+        "screen": tile[CONF_SCREEN],
+        "tile": tile[CONF_TILE],
+        "state": "on" if playing else "off",
+        "subLabel": (state.attributes.get("media_title") or "") if state else "",
+    }
+    # The built-in icon shows what a tap will do: pause while playing, play
+    # otherwise. Any other icon chosen in the config flow is left alone.
+    if tile.get(CONF_ICON) in _PLAY_PAUSE_ICONS:
+        payload["icon"] = "_pause" if playing else "_play"
+    return payload
+
+
+async def _transport_handle_event(
+    hass: HomeAssistant, tile: dict[str, Any], payload: dict[str, Any]
+) -> None:
+    # Single taps only: a hold on an arrow must not skip through the queue.
+    if payload.get("event") != "single":
+        return
+    service = _TRANSPORT_SERVICES.get(payload.get("type"))
+    if service is not None:
+        await hass.services.async_call(
+            "media_player", service, {"entity_id": tile[CONF_ENTITY_ID]}, blocking=False
+        )
+
+
+# ─── playlists → Music Assistant player (dropDown of chosen playlists) ─────
+# Music Assistant reports the current track, not the playlist it came from,
+# so the tile can't read back which playlist is playing. It remembers the
+# last one it started per player instead; that resets on HA restart.
+_LAST_PLAYLIST_KEY = f"{DOMAIN}_last_playlist"
+
+
+def playlists_from_library(response: dict[str, Any] | None) -> list[dict[str, str]]:
+    """Name and URI of each playlist in a music_assistant.get_library response."""
+    return [
+        {"name": item["name"], "uri": item["uri"]}
+        for item in (response or {}).get("items", [])
+        if item.get("name") and item.get("uri")
+    ]
+
+
+def _playlists_build_state(hass: HomeAssistant, tile: dict[str, Any]) -> dict[str, Any]:
+    playlists = tile.get(CONF_PLAYLISTS, [])
+    uris = [p["uri"] for p in playlists]
+    last_uri = hass.data.get(_LAST_PLAYLIST_KEY, {}).get(tile[CONF_ENTITY_ID])
+    index = uris.index(last_uri) + 1 if last_uri in uris else 0
+    payload: dict[str, Any] = {
+        "screen": tile[CONF_SCREEN],
+        "tile": tile[CONF_TILE],
+        "dropDownList": [p["name"] for p in playlists],
+        "dropDownSelect": index,  # 1-based; 0 = nothing selected
+    }
+    if index:
+        payload["subLabel"] = playlists[index - 1]["name"]
+    return payload
+
+
+async def _playlists_handle_event(
+    hass: HomeAssistant, tile: dict[str, Any], payload: dict[str, Any]
+) -> None:
+    if payload.get("type") != "dropDown" or payload.get("event") != "selection":
+        return
+    playlists = tile.get(CONF_PLAYLISTS, [])
+    index = int(payload.get("state") or 0) - 1
+    if not 0 <= index < len(playlists):
+        return
+    entity_id = tile[CONF_ENTITY_ID]
+    uri = playlists[index]["uri"]
+    # Record before calling, so the confirmation push that follows every
+    # event already shows this playlist as selected.
+    hass.data.setdefault(_LAST_PLAYLIST_KEY, {})[entity_id] = uri
+    await hass.services.async_call(
+        "music_assistant",
+        "play_media",
+        {"entity_id": entity_id, "media_id": uri, "media_type": "playlist", "enqueue": "replace"},
+        blocking=False,
+    )
+
+
 TILE_TYPES: dict[str, TileType] = {
     "rgbw": TileType(
         style="colorPickerRgbCct",
@@ -896,5 +994,35 @@ TILE_TYPES: dict[str, TileType] = {
         config_extra=None,
         build_state=_text_build_state,
         handle_event=_display_only_handle_event,
+    ),
+    "transport": TileType(
+        style="buttonPrevNext",
+        domain="media_player",
+        # Players that can skip also pause in practice, so skipping is the
+        # capability worth filtering on.
+        features={
+            "media_player": (
+                MediaPlayerEntityFeature.NEXT_TRACK
+                | MediaPlayerEntityFeature.PREVIOUS_TRACK
+            )
+        },
+        suggested_icons=["_play", "media-playpause", "_music"],
+        icon="_play",
+        label="Media transport (play/pause, previous, next)",
+        config_extra=None,
+        build_state=_transport_build_state,
+        handle_event=_transport_handle_event,
+    ),
+    "playlists": TileType(
+        style="dropDown",
+        domain="media_player",
+        integration="music_assistant",
+        features={"media_player": MediaPlayerEntityFeature.PLAY_MEDIA},
+        suggested_icons=["playlist", "_music", "list"],
+        icon="_music",
+        label="Playlists (Music Assistant)",
+        config_extra=None,
+        build_state=_playlists_build_state,
+        handle_event=_playlists_handle_event,
     ),
 }
