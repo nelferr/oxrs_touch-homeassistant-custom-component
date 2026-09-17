@@ -32,7 +32,7 @@ async def _async_get_library(hass: HomeAssistant) -> SharedMediaLibrary:
     if library is None:
         library = SharedMediaLibrary(hass)
         hass.data[LIBRARY_DATA_KEY] = library
-    await library.async_load()  # no-op if already loaded
+    await library.async_setup()  # no-op once ready; concurrent callers wait
     return library
 
 

@@ -72,10 +72,39 @@ hides the icon, empty restores it**. Follow the code, not the docs.
 
 1. `tiles.py` — add a `TILE_TYPES` entry: `style`, `domain`, `icon`, `label`,
    `config_extra`, `build_state`, `handle_event`, and optionally
-   `device_class` to narrow the picker past the domain.
-2. Nothing else. `hub.py` drives everything generically off the registry, and
-   the config flow builds both the type dropdown and the entity picker
-   (including `device_class`) from it.
+   `device_class` to narrow the picker past the domain and `suggested_icons`
+   to lead the icon picker.
+2. If the card needs new artwork, add it to `oxrs_touchpanel/bundled_icons.json`
+   (and to `ICON_STATE_PAIRS` in `library.py` if it pictures an on/off pair).
+3. Nothing else. `hub.py` drives everything generically off the registry, and
+   the config flow builds the type dropdown, the entity picker and the icon
+   picker from it.
+
+### A.4 Icons
+
+The 65 icons generated for this catalog ship inside the integration as
+`oxrs_touchpanel/bundled_icons.json`, so there is nothing to upload.
+
+- **Seeding.** On startup the shared library adds any bundled icon it lacks,
+  under the category recorded in the JSON, and refreshes one whose artwork
+  changed in an update. It runs once per HA start, behind a lock, because
+  panels set up concurrently. Panels pay nothing: only icons their tiles use
+  are sent to them.
+- **Ownership.** A user upload with a bundled icon's name replaces it, and
+  seeding leaves it alone — the panel addresses icons by name, so two entries
+  under one name was always a bug. Deleting a bundled icon is remembered in
+  `.storage` (`dismissed_bundled_icons`) so it stays deleted across restarts;
+  deleting the user's replacement lets the bundled one come back.
+- **Suggestions.** `suggested_icons` puts a tile type's icons first in the
+  picker, labelled "Suggested:", and the first *available* one is the default.
+  Where a bundled icon adds a state swap (doors, presence, blinds) it leads;
+  elsewhere the familiar built-in stays first and the bundled ones follow.
+  Custom icons below are sorted by category so each reads as a block.
+- **State pairs.** `ICON_STATE_PAIRS` lists icons that picture two states of one
+  thing. A tile configured with either half shows the half matching its
+  on/off `state`, for any tile type that reports one. Both halves are sent to
+  the panel. If either half has been deleted, the tile keeps its configured
+  icon rather than naming one the panel never received.
 
 Filtering belongs in the registry, and reaches the picker two ways:
 
@@ -277,12 +306,11 @@ network config on the panel that HA already owns.
   `_augment_tile_state` runs after `build_state`.
 - **handle_event:** `_display_only_handle_event` — the button style *does*
   receive taps, unlike `indicator`, so the no-op is what keeps it read-only.
-- **Dropped from v1 — icon swapping.** The spec originally called for swapping
-  `_door` / `_window` by state, but the firmware built-ins have no open/closed
-  *pair* — there is one `_door` and one `_window` glyph. A real swap needs the
-  custom `door-open` / `door-closed` icons from `TILE_ICONS_BASE64.json`
-  uploaded first, so it can't be the default behaviour. Revisit as an optional
-  per-tile "icon when open" setting.
+- **Icon swapping — ✅ now default.** The firmware built-ins have no
+  open/closed *pair* (one `_door`, one `_window`), which is why this was
+  dropped at first. With the bundled icons shipped, the type defaults to
+  `door-closed` and shows `door-open` while open; `window-*`, `garage` and
+  `gate` pairs are suggested too. See A.4. Picking `_door` opts out.
 - **Dropped from v1 — `iconColorRgb`.** Whether the firmware tints a *custom*
   PNG or only its own built-ins is undocumented, and setting it overrides the
   panel's configured on-colour with no clean way back. Needs testing on real
@@ -291,9 +319,9 @@ network config on the panel that HA already owns.
 ### 11. Presence — ✅ built as `presence`
 Same as `door_window` with
 `device_class: ["motion", "occupancy", "presence"]` and
-`subLabel` = `"Detected"` / `"Clear"`. Default icon is `_onoff`; the built-ins
-have no person or motion glyph, so `motion` / `presence-home` from
-`TILE_ICONS_BASE64.json` are the better pick once uploaded.
+`subLabel` = `"Detected"` / `"Clear"`. The built-ins have no person or motion
+glyph, so the type defaults to the bundled `motion` icon, which swaps to
+`motion-off` when clear; `presence-home` / `presence-away` is the other pair.
 
 ### 12. Slider
 **Extends** `slider` · **Style** `buttonSlider`

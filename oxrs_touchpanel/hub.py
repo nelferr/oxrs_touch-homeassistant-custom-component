@@ -72,11 +72,14 @@ def _find_tile_type_for_domain(domain: str, tile_types: dict[str, Any]) -> str |
 
 
 def _augment_tile_state(
-    hass: HomeAssistant, state: dict[str, Any], tile: dict[str, Any]
+    hass: HomeAssistant,
+    state: dict[str, Any],
+    tile: dict[str, Any],
+    library: SharedMediaLibrary,
 ) -> None:
     """Apply common cross-tile-type extras to a cmnd state payload.
 
-    Currently handles two capabilities that apply to ANY tile type:
+    Currently handles three capabilities that apply to ANY tile type:
 
     1. Background image (OXRS two-step process, step 2): after addImage has
        been sent, tile payloads reference the image by name.
@@ -91,11 +94,17 @@ def _augment_tile_state(
        creating the tile (e.g. "21.4°C", "on" / "off", a last-changed
        sensor). Rendered as "<state> <unit>", trimmed.
 
+    3. State icon: a tile whose icon is half of a bundled pair (door-closed /
+       door-open) shows the half matching its on/off state. Only tiles that
+       report a "state" can swap. The other half reaches the panel alongside
+       the configured icon, in async_push_images_to_panel.
+
     Args:
-        hass:  Home Assistant instance (needed to read the subLabel entity)
-        state: Tile state payload dict (modified in-place)
-        tile:  Tile config dict (may contain background_image_name /
-               sublabel_entity_id)
+        hass:    Home Assistant instance (needed to read the subLabel entity)
+        state:   Tile state payload dict (modified in-place)
+        tile:    Tile config dict (may contain background_image_name /
+                 sublabel_entity_id / icon)
+        library: Shared media library, to confirm both halves of a pair exist
     """
     image_name = tile.get("background_image_name")
     if image_name:
@@ -117,6 +126,12 @@ def _augment_tile_state(
                 f"Injected subLabel '{sub_label}' from {sublabel_entity_id} "
                 f"for S{state.get('screen')}/T{state.get('tile')}"
             )
+
+    icon = tile.get(CONF_ICON)
+    if icon and "state" in state:
+        swapped = library.state_icon(icon, state["state"] == "on")
+        if swapped is not None:
+            state["icon"] = swapped
 
 
 class OxrsPanel:
@@ -356,7 +371,7 @@ class OxrsPanel:
                             temp_tile = {**tile, CONF_ENTITY_ID: action_entity}
                             state = handler["build_state"](self.hass, temp_tile)
                             if state is not None:
-                                _augment_tile_state(self.hass, state, tile)
+                                _augment_tile_state(self.hass, state, tile, self.library)
                                 payload_tiles.append(state)
                 continue
             
@@ -367,7 +382,7 @@ class OxrsPanel:
                 continue
             state = handler["build_state"](self.hass, tile)
             if state is not None:
-                _augment_tile_state(self.hass, state, tile)
+                _augment_tile_state(self.hass, state, tile, self.library)
                 payload_tiles.append(state)
         
         if payload_tiles:
@@ -389,6 +404,8 @@ class OxrsPanel:
         - icon (any tile type) - but only those NOT starting with "_", i.e.
           not one of the firmware's own built-in icons, which need nothing
           sent for them at all
+        - the other half of any bundled icon pair among those icons, since
+          _augment_tile_state swaps to it when the tile's state flips
         and sends an addImage/addIcon command for each unique name found.
         
         This is called during setup after config push to ensure images/icons
@@ -407,6 +424,11 @@ class OxrsPanel:
             t[CONF_ICON]
             for t in self.tiles
             if t.get(CONF_ICON) and not t[CONF_ICON].startswith("_")
+        }
+        icon_names |= {
+            partner
+            for name in icon_names
+            if (partner := self.library.paired_icon(name)) is not None
         }
 
         if not image_names and not icon_names:
@@ -518,7 +540,7 @@ class OxrsPanel:
             
             state = handler["build_state"](self.hass, temp_tile)
             if state is not None:
-                _augment_tile_state(self.hass, state, tile)
+                _augment_tile_state(self.hass, state, tile, self.library)
                 self.hass.async_create_task(
                     mqtt.async_publish(
                         self.hass,
@@ -561,7 +583,7 @@ class OxrsPanel:
         await asyncio.sleep(0.6)
         state = handler["build_state"](self.hass, build_tile)
         if state is not None:
-            _augment_tile_state(self.hass, state, augment_tile)
+            _augment_tile_state(self.hass, state, augment_tile, self.library)
             await mqtt.async_publish(
                 self.hass,
                 topic_cmnd(self.client_id),

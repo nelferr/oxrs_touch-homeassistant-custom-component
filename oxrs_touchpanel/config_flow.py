@@ -39,7 +39,7 @@ from .const import (
     LIBRARY_DATA_KEY,
 )
 from .library import ICON_CATEGORIES, SharedMediaLibrary
-from .tiles import TILE_TYPES, eligible_entity_ids
+from .tiles import TILE_TYPES, default_icon, eligible_entity_ids, suggested_icons
 
 
 def _client_id_from_topic(topic: str) -> str | None:
@@ -190,20 +190,39 @@ class OxrsOptionsFlow(OptionsFlow):
         already-configured panel can be opened)."""
         return self.hass.data.get(LIBRARY_DATA_KEY)
 
-    def _build_icon_options(self) -> list[dict[str, str]]:
-        """Combine firmware built-in icons with custom icons from the shared
-        library into one selector option list. Custom icon labels are
-        prefixed with their category so they group naturally when the
-        dropdown is sorted/scanned, without relying on disabled separator
-        rows (which don't render consistently across HA frontend versions)."""
-        options = [{"value": name, "label": name} for name in BUILTIN_ICONS]
+    def _available_icon_names(self) -> set[str]:
+        """Every icon a tile can use right now: built-ins plus the library."""
+        names = set(BUILTIN_ICONS)
         library = self._get_library()
         if library:
-            for icon in library.list_icons():
-                category_label = ICON_CATEGORIES.get(icon.get("category", ""), "Other")
-                options.append(
-                    {"value": icon["name"], "label": f"{category_label}: {icon['name']}"}
-                )
+            names.update(icon["name"] for icon in library.list_icons())
+        return names
+
+    def _build_icon_options(self, suggested: list[str] | None = None) -> list[dict[str, str]]:
+        """Combine firmware built-in icons with custom icons from the shared
+        library into one selector option list.
+
+        The tile type's suggested icons lead, labelled as such and not repeated
+        further down. Custom icon labels are prefixed with their category and
+        sorted by it, so each category reads as a block - without relying on
+        disabled separator rows (which don't render consistently across HA
+        frontend versions)."""
+        suggested = suggested or []
+        options = [{"value": name, "label": f"Suggested: {name}"} for name in suggested]
+        options.extend(
+            {"value": name, "label": name} for name in BUILTIN_ICONS if name not in suggested
+        )
+        library = self._get_library()
+        if library:
+            custom = [
+                (ICON_CATEGORIES.get(icon.get("category", ""), "Other"), icon["name"])
+                for icon in library.list_icons()
+                if icon["name"] not in suggested
+            ]
+            options.extend(
+                {"value": name, "label": f"{category_label}: {name}"}
+                for category_label, name in sorted(custom)
+            )
         return options
 
     async def async_step_init(
@@ -435,6 +454,7 @@ class OxrsOptionsFlow(OptionsFlow):
                     self._new_type,
                     definition["domain"],
                 )
+            available_icons = self._available_icon_names()
             schema_dict: dict[Any, Any] = {
                 vol.Required(
                     CONF_TILE, default=str(free[0])
@@ -449,10 +469,12 @@ class OxrsOptionsFlow(OptionsFlow):
                 ),
                 vol.Optional(CONF_LABEL, default=""): selector.TextSelector(),
                 vol.Optional(
-                    CONF_ICON, default=definition["icon"]
+                    CONF_ICON, default=default_icon(definition, available_icons)
                 ): selector.SelectSelector(
                     selector.SelectSelectorConfig(
-                        options=self._build_icon_options(),
+                        options=self._build_icon_options(
+                            suggested_icons(definition, available_icons)
+                        ),
                         mode=selector.SelectSelectorMode.DROPDOWN,
                     )
                 ),
@@ -830,12 +852,20 @@ class OxrsOptionsFlow(OptionsFlow):
             await library.delete_icon(user_input["icon_id"])
             return self.async_abort(reason="icon_deleted")
 
+        # Bundled icons are marked because deleting one is sticky: it won't be
+        # re-added on restart, unlike a user upload of the same name.
         options = [
             {
                 "value": icon["id"],
-                "label": f"{ICON_CATEGORIES.get(icon.get('category', ''), 'Other')}: {icon['name']}",
+                "label": (
+                    f"{ICON_CATEGORIES.get(icon.get('category', ''), 'Other')}: {icon['name']}"
+                    + (" (bundled)" if icon.get("bundled") else "")
+                ),
             }
-            for icon in icons
+            for icon in sorted(
+                icons,
+                key=lambda i: (ICON_CATEGORIES.get(i.get("category", ""), "Other"), i["name"]),
+            )
         ]
         schema = vol.Schema(
             {

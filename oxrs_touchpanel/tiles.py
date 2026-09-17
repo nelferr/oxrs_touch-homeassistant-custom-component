@@ -10,6 +10,9 @@ Each tile type declares:
   * ``features`` - optional; ``{domain: bitmask}`` of entity features the tile
     needs, matched any-of. Domains left out of the mapping are not checked.
   * ``numeric_state`` - optional; the tile can only render a numeric value.
+  * ``suggested_icons`` - optional; icons offered first in the picker, best
+    first. Bundled icons that pair with an "on" partner in ``library.py``
+    swap automatically with the tile's state.
   * ``icon``   - default icon if the user does not choose one.
   * ``build_state`` - build the ``cmnd/`` tile object from the bound entity.
   * ``handle_event`` - apply an incoming ``stat/`` event to the bound entity.
@@ -47,6 +50,7 @@ class TileType(TypedDict):
     color_modes: NotRequired[list[str]]
     features: NotRequired[dict[str, int]]
     numeric_state: NotRequired[bool]
+    suggested_icons: NotRequired[list[str]]
     icon: str
     label: str
     config_extra: Callable[[HomeAssistant, dict[str, Any]], dict[str, Any]] | None
@@ -63,6 +67,20 @@ def _clamp(value: int, low: int, high: int) -> int:
 # driven by a colour wheel or a brightness slider.
 COLOR_CAPABLE_MODES = ["hs", "xy", "rgb", "rgbw", "rgbww"]
 BRIGHTNESS_CAPABLE_MODES = ["brightness", "color_temp", "white", *COLOR_CAPABLE_MODES]
+
+
+def suggested_icons(definition: TileType, available: set[str]) -> list[str]:
+    """A tile type's suggested icons that actually exist, best first.
+
+    Bundled icons can be deleted from the library, and a suggestion that isn't
+    there would configure a tile with an icon the panel never receives.
+    """
+    return [icon for icon in definition.get("suggested_icons", []) if icon in available]
+
+
+def default_icon(definition: TileType, available: set[str]) -> str:
+    """The icon a new tile of this type starts with."""
+    return next(iter(suggested_icons(definition, available)), definition["icon"])
 
 
 def _is_numeric_state(state: Any) -> bool:
@@ -756,6 +774,7 @@ TILE_TYPES: dict[str, TileType] = {
         # Stop is used on hold, but only when the cover reports it, so it is
         # not required here - open or close alone still makes a usable tile.
         features={"cover": CoverEntityFeature.OPEN | CoverEntityFeature.CLOSE},
+        suggested_icons=["shutter", "curtain", "_blind"],
         icon="_blind",
         label="Up/Down buttons (cover)",
         config_extra=_level_0_100,
@@ -768,6 +787,7 @@ TILE_TYPES: dict[str, TileType] = {
         # The tile sets a single setpoint. A climate entity that only does
         # TARGET_TEMPERATURE_RANGE (separate heat/cool) would ignore it.
         features={"climate": ClimateEntityFeature.TARGET_TEMPERATURE},
+        suggested_icons=["_thermostat", "ac", "heat", "cool"],
         icon="_thermostat",
         label="Thermostat (climate)",
         config_extra=_thermostat_arc_range,
@@ -777,6 +797,7 @@ TILE_TYPES: dict[str, TileType] = {
     "button": TileType(
         style="button",
         domain=["script", "scene", "switch", "button", "input_button"],
+        suggested_icons=["_onoff", "scene", "script", "automation", "fan-off"],
         icon="_onoff",
         label="Button (script / scene / switch)",
         config_extra=None,
@@ -794,6 +815,7 @@ TILE_TYPES: dict[str, TileType] = {
                 | MediaPlayerEntityFeature.VOLUME_SET
             )
         },
+        suggested_icons=["_speaker", "volume", "tv"],
         icon="_speaker",
         label="Volume up/down (media player)",
         config_extra=_level_0_100,
@@ -806,6 +828,7 @@ TILE_TYPES: dict[str, TileType] = {
         # A media player is only listed if it has sources to choose from;
         # select and input_select always do, so they are not checked.
         features={"media_player": MediaPlayerEntityFeature.SELECT_SOURCE},
+        suggested_icons=["_music", "list", "playlist", "tv"],
         icon="_music",
         label="Selector list (source / radio / playlist)",
         config_extra=None,
@@ -819,6 +842,9 @@ TILE_TYPES: dict[str, TileType] = {
         # This tile drives an absolute position, so a blind that only knows
         # open and closed can't honour it.
         features={"cover": CoverEntityFeature.SET_POSITION},
+        # Built-in first: this type also takes lights, and a shutter default
+        # would be wrong for them.
+        suggested_icons=["_blind", "shutter", "curtain", "_bulb"],
         icon="_blind",
         label="Up/Down with level (cover position / light brightness)",
         config_extra=_level_0_100,
@@ -844,6 +870,7 @@ TILE_TYPES: dict[str, TileType] = {
         style="button",
         domain="binary_sensor",
         device_class=["door", "window", "garage_door", "opening"],
+        suggested_icons=["door-closed", "window-closed", "garage", "gate", "_door", "_window"],
         icon="_door",
         label="Door / window contact (read-only)",
         config_extra=None,
@@ -854,6 +881,7 @@ TILE_TYPES: dict[str, TileType] = {
         style="button",
         domain="binary_sensor",
         device_class=["motion", "occupancy", "presence"],
+        suggested_icons=["motion", "presence-home", "_onoff"],
         icon="_onoff",
         label="Presence / motion (read-only)",
         config_extra=None,
