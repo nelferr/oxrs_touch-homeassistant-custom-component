@@ -40,8 +40,15 @@ _LOGGER = logging.getLogger(__name__)
 STORAGE_VERSION = 1
 STORAGE_KEY = "oxrs_touchpanel_library"
 
-# OXRS firmware crashes if the encoded (base64) payload exceeds ~4KB.
+# The OXRS docs put the safe ceiling for an encoded (base64) payload at ~4KB,
+# and mark that figure "TBC". Above it the firmware is said to crash; in
+# practice a panel may simply not draw the image. Uploads above this are
+# allowed but warned about, so the real ceiling can be found on hardware -
+# 4KB of PNG is only about 12 colours at tile size, too few for album art.
 MAX_ENCODED_SIZE = 4096
+# Refuse outright above this: well past anything a panel is likely to take,
+# and large MQTT payloads are worth failing fast on.
+MAX_ENCODED_SIZE_HARD = 65536
 
 # Fixed set of categories for organising custom icons in the picker.
 ICON_CATEGORIES: dict[str, str] = {

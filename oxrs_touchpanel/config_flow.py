@@ -43,7 +43,12 @@ from .const import (
     LIBRARY_DATA_KEY,
     MAX_PLAYLISTS,
 )
-from .library import ICON_CATEGORIES, SharedMediaLibrary
+from .library import (
+    ICON_CATEGORIES,
+    MAX_ENCODED_SIZE,
+    MAX_ENCODED_SIZE_HARD,
+    SharedMediaLibrary,
+)
 from .tiles import (
     TILE_TYPES,
     default_icon,
@@ -88,10 +93,23 @@ def _decode_and_validate_base64_image(
         _LOGGER.error(f"Base64 decode failed: {err}")
         return None, "", "image_error"
 
-    # OXRS docs: "encoded image should not exceed 4KB" - the base64 string
-    if len(image_base64) > 4096:
-        _LOGGER.warning(f"Base64 string too large: {len(image_base64)} chars (OXRS limit ~4KB)")
+    # OXRS docs: "encoded image should not exceed 4KB - TBC". Over that is
+    # allowed but flagged, since the real ceiling is only knowable on hardware
+    # and 4KB is too little for a photographic image at tile size.
+    if len(image_base64) > MAX_ENCODED_SIZE_HARD:
+        _LOGGER.warning(
+            "Base64 string too large: %d chars (hard limit %d)",
+            len(image_base64),
+            MAX_ENCODED_SIZE_HARD,
+        )
         return None, "", "image_too_large"
+    if len(image_base64) > MAX_ENCODED_SIZE:
+        _LOGGER.warning(
+            "Base64 string is %d chars, above the ~%d the OXRS docs call safe. "
+            "The panel may ignore the image or restart.",
+            len(image_base64),
+            MAX_ENCODED_SIZE,
+        )
 
     if image_bytes[:4] == bytes([0x89, 0x50, 0x4E, 0x47]):
         fmt = "png"
