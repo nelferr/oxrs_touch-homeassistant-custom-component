@@ -77,11 +77,68 @@ hides the icon, empty restores it**. Follow the code, not the docs.
    the config flow builds both the type dropdown and the entity picker
    (including `device_class`) from it.
 
-**Do not** reach for `_get_entity_filter_for_tile_type` in `config_flow.py`.
-It is dead code — defined, never called — left behind when commit `45b26d9`
-reverted submit-time capability validation. Filtering that `EntitySelectorConfig`
-can express (`domain`, `device_class`, `supported_features`) belongs in the
-registry; anything it can't is a deliberate gap, not an oversight.
+Filtering belongs in the registry, and reaches the picker two ways:
+
+1. **Declaratively**, where `EntitySelectorConfig` can express it — `domain` and
+   `device_class` are passed straight through.
+2. **Resolved from live state**, where it can't. `eligible_entity_ids` in
+   `tiles.py` walks `hass.states`, applies the tile type's `color_modes`,
+   `features` and `numeric_state` rules, drops unavailable entities, and hands
+   the result to the selector as `include_entities`.
+
+Everything attribute-shaped goes through route 2, including feature bitmasks
+that `EntitySelectorConfig` could filter natively. One mechanism, one place to
+look, and each check is scoped to the domain it applies to so multi-domain tile
+types don't lose one domain to another's rule.
+
+The fallback matters: when nothing qualifies, `include_entities` is omitted and
+the plain domain picker is shown with a logged warning, so a user with (say) no
+colour bulbs sees every light rather than an empty dropdown.
+
+A `_get_entity_filter_for_tile_type` method in `config_flow.py` used to build
+filter callables per tile type. It was dead code — defined, never called — left
+behind when commit `45b26d9` reverted submit-time capability validation, and has
+since been removed. `include_entities` is what that code was missing: it narrows
+the picker up front, so nothing has to be rejected on submit.
+
+**What each type requires.** Colour-mode sets (`COLOR_CAPABLE_MODES`,
+`BRIGHTNESS_CAPABLE_MODES`) deliberately exclude `onoff` and `unknown`.
+
+| Type | Requires | Keeps out |
+| :--- | :--- | :--- |
+| `rgbw` | any of hs, xy, rgb, rgbw, rgbww | dimmer-only and on/off bulbs |
+| `cct` | color_temp | colour bulbs with no tunable white |
+| `slider` | any mode that dims | on/off relays |
+| `updown` | cover OPEN or CLOSE | tilt-only covers |
+| `updownlevel` | cover SET_POSITION, or a dimmable light | blinds that only know open/closed |
+| `thermostat` | climate TARGET_TEMPERATURE | range-only (separate heat/cool setpoints) |
+| `volume` | media VOLUME_STEP or VOLUME_SET | players with no volume control |
+| `select` | media SELECT_SOURCE (helpers exempt) | players with no source list |
+| `indicator` | numeric state | text sensors — those belong on `text` |
+| `door_window`, `presence` | device_class (declarative) | unrelated binary sensors |
+
+Notes on the judgement calls:
+
+- **`rgbw` accepts any colour-capable light, not just RGBW.** HA converts colour
+  between modes on `light.turn_on`, so an hs bulb works fine on a colour wheel.
+  Tighten `color_modes` to `["rgbw"]` if you'd rather be strict.
+- **`volume` accepts VOLUME_SET.** HA's default `volume_up`/`volume_down` step
+  the level for any player that can set it outright.
+- **`updown` doesn't require STOP.** Stop is only sent on hold, and a cover
+  without it is still perfectly usable open/closed.
+- **`indicator` keeps sensors reading `unknown`** when they declare a unit or
+  state class, so a thermometer doesn't vanish between readings.
+- Feature checks read `supported_features` from live state, so an integration
+  that under-reports will have entities quietly filtered out. The all-or-nothing
+  fallback won't catch that — it only fires when *nothing* qualifies.
+
+**Verified against HA core-2026.9.2.** `CoverEntityFeature` now lives in
+`cover/const.py` but is still re-exported from the package, so the import in
+`tiles.py` holds. These names do churn — `ClimateEntityFeature.AUX_HEAT` was
+removed between 2024.6 and now — so re-check them when bumping the HA baseline.
+Note also that `EntitySelectorConfig` now treats top-level `domain` and
+`device_class` as legacy, with new filter options going under a `filter` key;
+the legacy form still works and is what this integration uses.
 
 Two things the registry does **not** support yet, needed by a few cards below:
 - **Periodic re-push** (countdown timers, media track position). Needs an

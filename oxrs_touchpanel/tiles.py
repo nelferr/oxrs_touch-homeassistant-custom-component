@@ -5,6 +5,11 @@ Each tile type declares:
   * ``domain`` - the HA entity domain the tile binds to (drives the picker).
   * ``device_class`` - optional; narrows the picker beyond the domain, so a
     door tile only offers door/window contacts rather than every binary_sensor.
+  * ``color_modes`` - optional; light colour modes the tile can drive, used by
+    ``eligible_entity_ids`` to keep incapable bulbs out of the picker.
+  * ``features`` - optional; ``{domain: bitmask}`` of entity features the tile
+    needs, matched any-of. Domains left out of the mapping are not checked.
+  * ``numeric_state`` - optional; the tile can only render a numeric value.
   * ``icon``   - default icon if the user does not choose one.
   * ``build_state`` - build the ``cmnd/`` tile object from the bound entity.
   * ``handle_event`` - apply an incoming ``stat/`` event to the bound entity.
@@ -17,6 +22,10 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any, NotRequired, TypedDict
 
+from homeassistant.components.climate import ClimateEntityFeature
+from homeassistant.components.cover import CoverEntityFeature
+from homeassistant.components.media_player import MediaPlayerEntityFeature
+from homeassistant.const import STATE_UNAVAILABLE
 from homeassistant.core import HomeAssistant
 
 from .const import (
@@ -35,6 +44,9 @@ class TileType(TypedDict):
     style: str
     domain: str | list[str]
     device_class: NotRequired[str | list[str]]
+    color_modes: NotRequired[list[str]]
+    features: NotRequired[dict[str, int]]
+    numeric_state: NotRequired[bool]
     icon: str
     label: str
     config_extra: Callable[[HomeAssistant, dict[str, Any]], dict[str, Any]] | None
@@ -44,6 +56,71 @@ class TileType(TypedDict):
 
 def _clamp(value: int, low: int, high: int) -> int:
     return max(low, min(high, value))
+
+
+# HA light colour modes (ColorMode) grouped by what a tile can do with them.
+# "onoff" and "unknown" appear in neither: a bulb that only switches can't be
+# driven by a colour wheel or a brightness slider.
+COLOR_CAPABLE_MODES = ["hs", "xy", "rgb", "rgbw", "rgbww"]
+BRIGHTNESS_CAPABLE_MODES = ["brightness", "color_temp", "white", *COLOR_CAPABLE_MODES]
+
+
+def _is_numeric_state(state: Any) -> bool:
+    """Whether a sensor carries a number the indicator tile can render.
+
+    A sensor that is momentarily "unknown" still counts if it declares a unit
+    or state class, so a thermometer doesn't vanish from the picker between
+    readings.
+    """
+    if state.attributes.get("unit_of_measurement") or state.attributes.get("state_class"):
+        return True
+    try:
+        float(state.state)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def eligible_entity_ids(hass: HomeAssistant, definition: TileType) -> list[str]:
+    """List the entities a tile type can actually drive, for the config picker.
+
+    The entity selector filters on domain and device_class but cannot inspect
+    attributes, so everything attribute-shaped is resolved here: light colour
+    capability (which HA expresses as ``supported_color_modes`` rather than as
+    feature flags), entity feature bitmasks, and whether a sensor is numeric.
+    Without this a colour picker will happily bind to a plain on/off bulb, or a
+    position slider to a blind that only knows open and closed.
+
+    Unavailable entities drop out at the same time. They are useless on a panel
+    and report no capability attributes anyway, so they could not be checked
+    even if we wanted to offer them.
+    """
+    domains = definition["domain"]
+    if isinstance(domains, str):
+        domains = [domains]
+    color_modes = definition.get("color_modes")
+    features = definition.get("features")
+    numeric_state = definition.get("numeric_state")
+
+    eligible: list[str] = []
+    for state in hass.states.async_all(domains):
+        if state.state == STATE_UNAVAILABLE:
+            continue
+        # Each check is scoped to the domain it applies to, so a multi-domain
+        # type like updownlevel does not lose its covers for want of a colour
+        # mode, nor its lights for want of a cover feature.
+        if color_modes and state.domain == "light":
+            supported = state.attributes.get("supported_color_modes") or []
+            if not any(mode in color_modes for mode in supported):
+                continue
+        if features:
+            required = features.get(state.domain)
+            if required and not int(state.attributes.get("supported_features") or 0) & required:
+                continue
+        if numeric_state and not _is_numeric_state(state):
+            continue
+        eligible.append(state.entity_id)
+    return eligible
 
 
 # ─── colorPickerCct ──────────────────────────────────────────────────────────
@@ -646,6 +723,7 @@ TILE_TYPES: dict[str, TileType] = {
     "rgbw": TileType(
         style="colorPickerRgbCct",
         domain="light",
+        color_modes=COLOR_CAPABLE_MODES,
         icon="_bulb",
         label="RGBW light (RGB + white channel)",
         config_extra=None,
@@ -655,6 +733,7 @@ TILE_TYPES: dict[str, TileType] = {
     "cct": TileType(
         style="colorPickerCct",
         domain="light",
+        color_modes=["color_temp"],
         icon="_bulb",
         label="CCT light (colour temperature)",
         config_extra=None,
@@ -664,6 +743,7 @@ TILE_TYPES: dict[str, TileType] = {
     "slider": TileType(
         style="buttonSlider",
         domain="light",
+        color_modes=BRIGHTNESS_CAPABLE_MODES,
         icon="_bulb",
         label="Slider (light brightness)",
         config_extra=_level_0_100,
@@ -673,6 +753,9 @@ TILE_TYPES: dict[str, TileType] = {
     "updown": TileType(
         style="buttonUpDown",
         domain="cover",
+        # Stop is used on hold, but only when the cover reports it, so it is
+        # not required here - open or close alone still makes a usable tile.
+        features={"cover": CoverEntityFeature.OPEN | CoverEntityFeature.CLOSE},
         icon="_blind",
         label="Up/Down buttons (cover)",
         config_extra=_level_0_100,
@@ -682,6 +765,9 @@ TILE_TYPES: dict[str, TileType] = {
     "thermostat": TileType(
         style="thermostat",
         domain="climate",
+        # The tile sets a single setpoint. A climate entity that only does
+        # TARGET_TEMPERATURE_RANGE (separate heat/cool) would ignore it.
+        features={"climate": ClimateEntityFeature.TARGET_TEMPERATURE},
         icon="_thermostat",
         label="Thermostat (climate)",
         config_extra=_thermostat_arc_range,
@@ -700,6 +786,14 @@ TILE_TYPES: dict[str, TileType] = {
     "volume": TileType(
         style="buttonUpDown",
         domain="media_player",
+        # VOLUME_SET counts too: HA's default volume_up/volume_down step the
+        # level for any player that can set it outright.
+        features={
+            "media_player": (
+                MediaPlayerEntityFeature.VOLUME_STEP
+                | MediaPlayerEntityFeature.VOLUME_SET
+            )
+        },
         icon="_speaker",
         label="Volume up/down (media player)",
         config_extra=_level_0_100,
@@ -709,6 +803,9 @@ TILE_TYPES: dict[str, TileType] = {
     "select": TileType(
         style="dropDown",
         domain=["select", "input_select", "media_player"],
+        # A media player is only listed if it has sources to choose from;
+        # select and input_select always do, so they are not checked.
+        features={"media_player": MediaPlayerEntityFeature.SELECT_SOURCE},
         icon="_music",
         label="Selector list (source / radio / playlist)",
         config_extra=None,
@@ -718,6 +815,10 @@ TILE_TYPES: dict[str, TileType] = {
     "updownlevel": TileType(
         style="buttonUpDownLevel",
         domain=["cover", "light"],
+        color_modes=BRIGHTNESS_CAPABLE_MODES,
+        # This tile drives an absolute position, so a blind that only knows
+        # open and closed can't honour it.
+        features={"cover": CoverEntityFeature.SET_POSITION},
         icon="_blind",
         label="Up/Down with level (cover position / light brightness)",
         config_extra=_level_0_100,
@@ -727,6 +828,9 @@ TILE_TYPES: dict[str, TileType] = {
     "indicator": TileType(
         style="indicator",
         domain="sensor",
+        # The firmware restricts this tile's value to 0-9 + - . : so a text
+        # sensor would render as stripped nonsense. Use the "text" type.
+        numeric_state=True,
         icon="_thermostat",
         label="Sensor display (temperature, humidity, etc.)",
         config_extra=None,

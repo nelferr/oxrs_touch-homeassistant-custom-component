@@ -39,7 +39,7 @@ from .const import (
     LIBRARY_DATA_KEY,
 )
 from .library import ICON_CATEGORIES, SharedMediaLibrary
-from .tiles import TILE_TYPES
+from .tiles import TILE_TYPES, eligible_entity_ids
 
 
 def _client_id_from_topic(topic: str) -> str | None:
@@ -368,71 +368,6 @@ class OxrsOptionsFlow(OptionsFlow):
             _LOGGER.error(f"Error in async_step_add_tile_type: {err}", exc_info=True)
             return self.async_abort(reason="invalid_type")
 
-    def _get_entity_filter_for_tile_type(self, tile_type: str):
-        """Build entity filter based on tile type and its requirements."""
-        if tile_type == "rgbw":
-            # RGBW: light must have BOTH "hs" and "rgbw" in supported_color_modes
-            def filter_rgbw(entity):
-                if entity.domain != "light":
-                    return False
-                state = self.hass.states.get(entity.entity_id)
-                if not state:
-                    return False
-                color_modes = state.attributes.get("supported_color_modes", [])
-                return "hs" in color_modes and "rgbw" in color_modes
-            return filter_rgbw
-        
-        elif tile_type == "cct":
-            # CCT: light must have color_temp capability
-            def filter_cct(entity):
-                if entity.domain != "light":
-                    return False
-                state = self.hass.states.get(entity.entity_id)
-                if not state:
-                    return False
-                # Check for color_temp_kelvin, color_temp, or color_temp in modes
-                color_modes = state.attributes.get("supported_color_modes", [])
-                has_temp = (
-                    "color_temp_kelvin" in state.attributes or
-                    "color_temp" in state.attributes or
-                    "color_temp" in color_modes
-                )
-                return has_temp
-            return filter_cct
-        
-        elif tile_type == "slider":
-            # Slider: light must have brightness
-            def filter_slider(entity):
-                if entity.domain != "light":
-                    return False
-                state = self.hass.states.get(entity.entity_id)
-                if not state:
-                    return False
-                return "brightness" in state.attributes
-            return filter_slider
-        
-        elif tile_type == "updown":
-            # UpDown: cover entity
-            return lambda entity: entity.domain == "cover"
-        
-        elif tile_type == "thermostat":
-            # Thermostat: climate entity
-            return lambda entity: entity.domain == "climate"
-        
-        elif tile_type == "volume":
-            # Volume: media_player entity
-            return lambda entity: entity.domain == "media_player"
-        
-        elif tile_type == "select":
-            # Select: select or input_select entity
-            return lambda entity: entity.domain in ("select", "input_select")
-        
-        elif tile_type == "button":
-            # Button: switch, scene, script, button, input_button
-            return lambda entity: entity.domain in ("switch", "scene", "script", "button", "input_button")
-        
-        return None
-
     async def async_step_add_tile_details(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -486,6 +421,20 @@ class OxrsOptionsFlow(OptionsFlow):
             entity_config: dict[str, Any] = {"domain": definition["domain"]}
             if definition.get("device_class"):
                 entity_config["device_class"] = definition["device_class"]
+            # Light capability and availability can only be judged by looking at
+            # live state, which the selector cannot do - so pass it the resolved
+            # list instead. Falling back to the plain domain picker when nothing
+            # qualifies beats showing the user an empty dropdown.
+            eligible = eligible_entity_ids(self.hass, definition)
+            if eligible:
+                entity_config["include_entities"] = eligible
+            else:
+                _LOGGER.warning(
+                    "No available entity is compatible with tile type '%s'; "
+                    "falling back to an unfiltered %s picker",
+                    self._new_type,
+                    definition["domain"],
+                )
             schema_dict: dict[Any, Any] = {
                 vol.Required(
                     CONF_TILE, default=str(free[0])
@@ -515,11 +464,16 @@ class OxrsOptionsFlow(OptionsFlow):
             }
             if self._new_type == "indicator":
                 # indicator tile: optional second sensor shown alongside the
-                # primary one (e.g. temperature + humidity in one tile).
+                # primary one (e.g. temperature + humidity in one tile). It
+                # renders through the same numeric-only field, so it gets the
+                # same eligibility list as the primary.
+                secondary_config: dict[str, Any] = {"domain": "sensor"}
+                if eligible:
+                    secondary_config["include_entities"] = eligible
                 schema_dict[
                     vol.Optional(CONF_INDICATOR_SECONDARY_ENTITY_ID)
                 ] = selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain="sensor")
+                    selector.EntitySelectorConfig(**secondary_config)
                 )
             schema = vol.Schema(schema_dict)
             
