@@ -24,7 +24,10 @@ from homeassistant.helpers.service_info.mqtt import MqttServiceInfo
 _LOGGER = logging.getLogger(__name__)
 
 from .const import (
+    ALBUM_ART_SIZE,
     BUILTIN_ICONS,
+    CONF_ALBUM_ART,
+    CONF_ALBUM_ART_BUDGET,
     CONF_CLIENT_ID,
     CONF_ENTITY_ID,
     CONF_ICON,
@@ -38,10 +41,13 @@ from .const import (
     CONF_TILE,
     CONF_TILES,
     CONF_TYPE,
+    DEFAULT_ALBUM_ART_BUDGET,
     DEFAULT_LAYOUT,
     DOMAIN,
     LIBRARY_DATA_KEY,
+    MAX_ALBUM_ART_BUDGET,
     MAX_PLAYLISTS,
+    MIN_ALBUM_ART_BUDGET,
 )
 from .library import (
     ICON_CATEGORIES,
@@ -303,7 +309,50 @@ class OxrsOptionsFlow(OptionsFlow):
                 "rename_screen",
                 "manage_background_images",
                 "manage_custom_icons",
+                "album_art_settings",
             ],
+        )
+
+    async def async_step_album_art_settings(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Set the size ceiling for album art pushed to this panel.
+
+        Panel-level rather than per-tile: the limit is a property of the
+        firmware's MQTT buffer, not of any one tile. Raising it past what the
+        firmware accepts makes art silently fail to draw, so the default sits
+        under the largest payload measured working on real hardware.
+        """
+        if user_input is not None:
+            options = dict(self._entry.options)
+            options[CONF_ALBUM_ART_BUDGET] = int(user_input[CONF_ALBUM_ART_BUDGET])
+            return self.async_create_entry(title="", data=options)
+
+        current = self._entry.options.get(
+            CONF_ALBUM_ART_BUDGET, DEFAULT_ALBUM_ART_BUDGET
+        )
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_ALBUM_ART_BUDGET, default=current
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=MIN_ALBUM_ART_BUDGET,
+                        max=MAX_ALBUM_ART_BUDGET,
+                        step=256,
+                        mode="box",
+                        unit_of_measurement="bytes",
+                    )
+                ),
+            }
+        )
+        return self.async_show_form(
+            step_id="album_art_settings",
+            data_schema=schema,
+            description_placeholders={
+                "default": str(DEFAULT_ALBUM_ART_BUDGET),
+                "size": str(ALBUM_ART_SIZE),
+            },
         )
 
     async def async_step_add_tile(
@@ -499,6 +548,8 @@ class OxrsOptionsFlow(OptionsFlow):
                     secondary_entity_id = user_input.get(CONF_INDICATOR_SECONDARY_ENTITY_ID)
                     if secondary_entity_id:
                         self._new_tile_config[CONF_INDICATOR_SECONDARY_ENTITY_ID] = secondary_entity_id
+                if self._new_type == "transport" and user_input.get(CONF_ALBUM_ART):
+                    self._new_tile_config[CONF_ALBUM_ART] = True
                 if self._new_type == "playlists":
                     return await self.async_step_add_tile_playlists()
                 # Go to background image selection step
@@ -559,6 +610,14 @@ class OxrsOptionsFlow(OptionsFlow):
                     selector.EntitySelectorConfig()
                 ),
             }
+            if self._new_type == "transport":
+                # transport tile: optionally show the player's current cover as
+                # the tile background. The firmware needs non-empty text to hide
+                # an icon, so art and the _play/_pause icon cannot both be on
+                # screen - the tile keeps the title as its subLabel instead.
+                schema_dict[
+                    vol.Optional(CONF_ALBUM_ART, default=False)
+                ] = selector.BooleanSelector()
             if self._new_type == "indicator":
                 # indicator tile: optional second sensor shown alongside the
                 # primary one (e.g. temperature + humidity in one tile). It
