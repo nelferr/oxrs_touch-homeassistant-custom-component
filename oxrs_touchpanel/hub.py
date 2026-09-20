@@ -136,7 +136,11 @@ def _augment_tile_state(
                  an image the panel may not hold.
     """
     image_name = tile.get("background_image_name")
-    if image_name:
+    # Hiding the icon only makes sense if there is an image to show instead. A
+    # tile can outlive its image (the library lets one be deleted while a tile
+    # still names it), and referencing a name the panel was never sent leaves a
+    # blank tile with no icon - white when lit.
+    if image_name and library.get_image_by_name(image_name) is not None:
         state["backgroundImage"] = {"name": image_name}
         state["text"] = " "   # non-empty text hides the icon (see note above)
         _LOGGER.debug(
@@ -811,8 +815,17 @@ class OxrsPanel:
             _LOGGER.debug(f"Invalid payload format (missing type): {payload}")
             return
         
-        screen = payload.get("screen", 1)
-        tile_idx = payload.get("tile", 1)
+        # Only tile events name both a screen and a tile. The panel also
+        # publishes backlight, lock-state and message-box events (neither
+        # field) and screen-change events (screen only), and defaulting the
+        # missing ones to 1 handled each of those as a touch on tile 1 - which
+        # re-pushed that tile's state 0.6 s after every sleep, wake and screen
+        # change.
+        if "screen" not in payload or "tile" not in payload:
+            _LOGGER.debug(f"Ignoring non-tile panel event: {payload.get('type')}")
+            return
+        screen = payload["screen"]
+        tile_idx = payload["tile"]
         
         _LOGGER.debug(f"Looking for tile: screen={screen}, tile={tile_idx}")
         _LOGGER.debug(f"Available tiles: {[(t.get(CONF_SCREEN), t.get(CONF_TILE)) for t in self.tiles]}")
