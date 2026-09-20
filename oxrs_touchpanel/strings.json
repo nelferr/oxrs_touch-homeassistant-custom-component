@@ -27,6 +27,7 @@
         "title": "OXRS Touch Panel",
         "menu_options": {
           "add_tile": "Add a tile",
+          "edit_tile": "Edit a tile",
           "remove_tile": "Remove a tile",
           "manage_background_images": "Manage background images",
           "rename_screen": "Screen name and colour",
@@ -74,6 +75,46 @@
       "add_tile_background": {
         "title": "Add background image (optional)",
         "description": "Select a background image for {tile}. {images_available}.",
+        "data": {
+          "background_image_name": "Background image"
+        }
+      },
+      "edit_tile": {
+        "title": "Edit a tile",
+        "description": "Choose the tile to change.",
+        "data": {
+          "index": "Tile"
+        }
+      },
+      "edit_tile_details": {
+        "title": "Edit a tile — {type} (screen {screen})",
+        "data": {
+          "tile": "Tile position",
+          "entity_id": "Bound entity",
+          "label": "Label",
+          "icon": "Icon",
+          "sublabel_entity_id": "Sub-label source (optional) - shows this entity's state under the tile",
+          "indicator_secondary_entity_id": "Secondary sensor (optional, indicator tiles only) - shown alongside the primary value",
+          "album_art": "Show album art as the tile background (transport tiles only) - replaces the play/pause icon",
+          "background_color": "Tile background colour"
+        },
+        "data_description": {
+          "entity_id": "Changing the entity keeps everything else about the tile.",
+          "sublabel_entity_id": "Clear the field to stop showing a sub-label.",
+          "background_color": "Leave on black for no colour of its own - the tile then follows its screen's colour."
+        },
+        "description": "Change anything below. The screen and the tile type can't change - to move a tile to another screen or change its type, remove it and add a new one."
+      },
+      "edit_tile_playlists": {
+        "title": "Edit a tile — choose playlists",
+        "description": "Tick up to {max} Music Assistant playlists. Choosing one on the panel replaces the player's queue with it.",
+        "data": {
+          "playlists": "Playlists"
+        }
+      },
+      "edit_tile_background": {
+        "title": "Edit a tile — background image",
+        "description": "Choose the background image for {tile}, or none. {images_available}.",
         "data": {
           "background_image_name": "Background image"
         }
@@ -206,7 +247,8 @@
       "icon_deleted": "Custom icon deleted from the shared library.",
       "no_icons": "There are no custom icons in the shared library yet.",
       "music_assistant_unavailable": "Couldn't read the Music Assistant library for this player. Check that Music Assistant is running, then try again.",
-      "no_playlists": "The Music Assistant library has no playlists yet. Add some in Music Assistant, then try again."
+      "no_playlists": "The Music Assistant library has no playlists yet. Add some in Music Assistant, then try again.",
+      "no_editable_tiles": "There are no tiles that can be edited yet - add one first."
     },
     "error": {
       "no_name": "Please enter a name.",
