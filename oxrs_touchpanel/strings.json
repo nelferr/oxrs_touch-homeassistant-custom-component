@@ -30,7 +30,8 @@
           "remove_tile": "Remove a tile",
           "manage_background_images": "Manage background images",
           "rename_screen": "Rename a screen",
-          "manage_custom_icons": "Manage custom icons"
+          "manage_custom_icons": "Manage custom icons",
+          "album_art_settings": "Album art settings"
         }
       },
       "add_tile": {
@@ -41,20 +42,21 @@
         }
       },
       "add_tile_type": {
-        "title": "Add a tile \u2014 choose type (screen {screen})",
+        "title": "Add a tile — choose type (screen {screen})",
         "data": {
           "tile_type": "Tile type"
         }
       },
       "add_tile_details": {
-        "title": "Add a tile \u2014 {type} (screen {screen})",
+        "title": "Add a tile — {type} (screen {screen})",
         "data": {
           "tile": "Tile position (free only)",
           "entity_id": "Bound entity",
           "label": "Label",
           "icon": "Icon",
           "sublabel_entity_id": "Sub-label source (optional) - shows this entity's state under the tile",
-          "indicator_secondary_entity_id": "Secondary sensor (optional, indicator tiles only) - shown alongside the primary value"
+          "indicator_secondary_entity_id": "Secondary sensor (optional, indicator tiles only) - shown alongside the primary value",
+          "album_art": "Show album art as the tile background (transport tiles only) - replaces the play/pause icon"
         }
       },
       "add_tile_playlists": {
@@ -136,6 +138,13 @@
         "data": {
           "icon_id": "Icon to delete"
         }
+      },
+      "album_art_settings": {
+        "title": "Album art",
+        "description": "Album art is shrunk to fit one MQTT message. The default of {default} bytes is the largest size measured working on real hardware; raising it may make art silently fail to draw, and lowering it trades colour for reliability. Art is rendered at {size}px.",
+        "data": {
+          "album_art_budget": "Maximum size per image"
+        }
       }
     },
     "abort": {
@@ -151,7 +160,7 @@
       "image_too_large": "Image is larger than 64 KB. Resize it first - the OXRS docs call ~4 KB safe, and larger images may not draw at all.",
       "invalid_image_name": "Image name cannot start with an underscore.",
       "image_uploaded": "Background image saved to the shared library - available on every panel!",
-      "no_screens": "No screens exist yet \u2014 add a tile first.",
+      "no_screens": "No screens exist yet — add a tile first.",
       "image_deleted": "Background image deleted from the shared library.",
       "no_images": "There are no background images in the shared library yet.",
       "icon_uploaded": "Custom icon saved to the shared library - available on every panel!",

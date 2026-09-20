@@ -460,10 +460,26 @@ photographs come out badly posterised. Measured against a panel instead:
 
 So `MAX_ENCODED_SIZE` is now a warning threshold, with a hard refusal at 64 KB.
 
-**Caveat: these were run on the PC emulator, not a physical panel.** The
-emulator has none of the ESP32's RAM or MQTT buffer limits, so treat every row
-above 4 KB as unconfirmed until the same ladder runs on hardware. Anything built
-on this should take the byte budget as a setting rather than baking one in.
+**⚠️ The table above was run on the PC emulator and is wrong for real hardware.**
+The emulator has neither the ESP32's RAM nor its MQTT buffer. Re-measured on a
+physical TP32 (2026-09-20), budgeting the **whole JSON payload** rather than the
+base64 string:
+
+| JSON payload | 140px image | Outcome |
+| ---: | :--- | :--- |
+| 12,240 B | 24 colours | **drew — largest accepted** |
+| 15,750 B | 64 colours | failed |
+| 16,384 B | 58 colours | failed |
+
+The wall is somewhere between 12,240 and 15,750 bytes; the exact figure was not
+worth the round trips. Every emulator row above ~12 KB is therefore unreachable,
+which rules out 256-colour tile art (25.7 KB), 300px art on a 2x2 tile (48.6 KB)
+and full-screen art (63.8 KB) alike.
+
+Budget the **payload**, not the base64: the JSON wrapper adds a variable number
+of bytes, and budgeting the inner string is what made the boundary hard to read
+the first time round. `DEFAULT_ALBUM_ART_BUDGET` sits just under the proven-good
+payload and is a per-panel setting, since other firmware builds may differ.
 
 PNG costs rise steeply with pixel size: at 48 KB a 300px image affords only 30
 colours, and at 64 KB a 460px one just 11. A good-looking full-screen image
@@ -491,7 +507,7 @@ The largest card. Build as separate tile types sharing one entity filter:
 | Volume (slider) | `buttonSlider` | `level` = `volume_level * 100` → `volume_set` |
 | Track position | any + `level` | `level` = `media_position / media_duration`; `subLabel` = `"1:23 / 3:45"` |
 | Now playing | `button` + `text` | `text` = title, `subLabel` = artist |
-| Cover art | any + `backgroundImage` | `entity_picture` → same 4 KB pipeline as Camera |
+| Cover art | any + `backgroundImage` | ✅ built as the `album_art` option on `transport` — see below |
 | Source / content | `dropDown` | existing `select` type already covers `source_list` |
 | Remote (d-pad) | `remote` | opens the firmware remote screen |
 
@@ -502,6 +518,32 @@ queue. The tile lights while playing and shows `media_title` as its subLabel.
 With the built-in `_play` or `_pause` icon it shows what a tap will do (pause
 while playing); any other icon is left alone. The picker offers players with
 NEXT_TRACK or PREVIOUS_TRACK.
+
+**`album_art`** — an option on `transport` rather than a tile type of its own,
+so one tile does artwork, title and controls together. `albumart.py` fetches the
+cover, centre-crops it square, resizes to 140px, blurs very slightly (fine grain
+is what PNG cannot compress) and binary-searches the largest palette whose whole
+JSON payload fits the budget. If even two colours will not fit at 140px it
+retries smaller before giving up.
+
+- **The artwork costs the icon.** A background image only shows while the tile's
+  text is non-empty, and non-empty text hides the icon — so a tile showing art
+  cannot also show `_play`/`_pause`. The title stays as the subLabel. This was a
+  deliberate trade against spending a second tile on a standalone art tile.
+- **One fixed image name per player** (`art-<object_id>`). Re-uploading an
+  existing name updates every tile using it, so a track change needs only the
+  addImage — no follow-up tile command.
+- **Change detection is the picture URL, not the title.** `entity_picture_local`
+  carries a per-track cache token, so comparing it avoids re-encoding on every
+  position update and still catches two tracks sharing a title.
+- **`entity_picture_local` is preferred over `entity_picture`** because it is
+  served by HA's own media_player proxy and therefore works for any player, not
+  only Music Assistant.
+- **Losing artwork clears the tile explicitly.** The panel keeps whatever image
+  it was last given, so an idle player sends `backgroundImage: {}` with empty
+  text, restoring the icon, rather than leaving a stale cover on screen.
+- **Everything is best-effort.** A failed fetch, a missing Pillow or an
+  impossible budget leaves a working transport tile with its icon intact.
 
 **`playlists`** — a `dropDown` of up to `MAX_PLAYLISTS` (6) Music Assistant
 playlists. When the tile is added, a config-flow step calls

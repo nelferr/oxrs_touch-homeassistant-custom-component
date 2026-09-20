@@ -48,6 +48,29 @@ CONF_INDICATOR_SECONDARY_ENTITY_ID = "indicator_secondary_entity_id"
 CONF_PLAYLISTS = "playlists"
 MAX_PLAYLISTS = 6
 
+# transport tile: show the player's current album art as the tile background.
+# The firmware needs non-empty text to hide a tile's icon, so a tile showing
+# art cannot also show the _play/_pause icon - see _augment_tile_state.
+CONF_ALBUM_ART = "album_art"
+
+# Largest addImage JSON payload, in bytes, that album art may produce.
+#
+# Measured on a physical OXRS TP32 (2026-09-20): a 12,240 B payload drew, and
+# both 15,750 B and 16,384 B failed. The exact wall between them was not worth
+# the round trips to find, so the default sits just under the largest payload
+# known to work. It is a setting rather than a constant because other firmware
+# builds may have a different MQTT buffer - the emulator, for one, swallows
+# 64 KB happily.
+CONF_ALBUM_ART_BUDGET = "album_art_budget"
+DEFAULT_ALBUM_ART_BUDGET = 12000
+MIN_ALBUM_ART_BUDGET = 2048
+MAX_ALBUM_ART_BUDGET = 65536
+
+# A tile is 140px. If artwork cannot be squeezed into the budget even at two
+# colours, the encoder retries smaller rather than giving up outright.
+ALBUM_ART_SIZE = 140
+ALBUM_ART_FALLBACK_SIZES = (120, 100, 80)
+
 # Per-tile keys (new - flexible actions)
 CONF_ACTIONS = "actions"
 CONF_ACTION_SEQUENCE = "sequence"

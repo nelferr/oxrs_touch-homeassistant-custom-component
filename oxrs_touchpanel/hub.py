@@ -14,10 +14,18 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_state_change_event
 
+from .albumart import (
+    art_image_name,
+    art_revision,
+    art_source_url,
+    async_build_art_payload,
+)
 from .const import (
     CONF_ACTION_ENTITY,
     CONF_ACTION_TILE_TYPE,
     CONF_ACTIONS,
+    CONF_ALBUM_ART,
+    CONF_ALBUM_ART_BUDGET,
     CONF_ENTITY_ID,
     CONF_ICON,
     CONF_INDICATOR_SECONDARY_ENTITY_ID,
@@ -28,6 +36,7 @@ from .const import (
     CONF_TILE,
     CONF_TILES,
     CONF_TYPE,
+    DEFAULT_ALBUM_ART_BUDGET,
     DEFAULT_LAYOUT,
     DOMAIN,
     MANUFACTURER,
@@ -76,10 +85,11 @@ def _augment_tile_state(
     state: dict[str, Any],
     tile: dict[str, Any],
     library: SharedMediaLibrary,
+    album_art_names: set[str] | None = None,
 ) -> None:
     """Apply common cross-tile-type extras to a cmnd state payload.
 
-    Currently handles three capabilities that apply to ANY tile type:
+    Currently handles four capabilities that apply to ANY tile type:
 
     1. Background image (OXRS two-step process, step 2): after addImage has
        been sent, tile payloads reference the image by name.
@@ -99,12 +109,27 @@ def _augment_tile_state(
        report a "state" can swap. The other half reaches the panel alongside
        the configured icon, in async_push_images_to_panel.
 
+    4. Album art: a media tile with CONF_ALBUM_ART shows the player's current
+       artwork as its background, under a fixed per-player image name. This
+       runs AFTER the static background above and wins if a tile somehow has
+       both, since the art is the more specific choice.
+
+       Because showing any background image requires non-empty text (see note
+       1), the tile's icon is hidden while art is up - that is the accepted
+       cost of putting art on the transport tile rather than a tile of its
+       own. When the player has no art, the background is cleared explicitly
+       and the icon restored: the panel keeps whatever it was last given, so
+       omitting the field would leave a stale cover on screen.
+
     Args:
         hass:    Home Assistant instance (needed to read the subLabel entity)
         state:   Tile state payload dict (modified in-place)
         tile:    Tile config dict (may contain background_image_name /
-                 sublabel_entity_id / icon)
+                 sublabel_entity_id / icon / album_art)
         library: Shared media library, to confirm both halves of a pair exist
+        album_art_names: Art image names currently loaded on this panel. None
+                 means "unknown", which suppresses art rather than referencing
+                 an image the panel may not hold.
     """
     image_name = tile.get("background_image_name")
     if image_name:
@@ -133,6 +158,23 @@ def _augment_tile_state(
         if swapped is not None:
             state["icon"] = swapped
 
+    if tile.get(CONF_ALBUM_ART):
+        art_entity_id = tile.get(CONF_ENTITY_ID) or tile.get(CONF_ACTION_ENTITY)
+        art_name = art_image_name(art_entity_id) if art_entity_id else None
+        if art_name and art_name in (album_art_names or set()):
+            state["backgroundImage"] = {"name": art_name}
+            state["text"] = " "
+            # The icon is hidden behind the art anyway; dropping it keeps the
+            # payload honest about what the panel will actually draw.
+            state.pop("icon", None)
+            _LOGGER.debug(
+                f"Injected album art '{art_name}' "
+                f"for S{state.get('screen')}/T{state.get('tile')}"
+            )
+        else:
+            state["backgroundImage"] = {}
+            state["text"] = ""   # empty text restores the icon (see note above)
+
 
 class OxrsPanel:
     """Represents a single OXRS Touch Panel (one MQTT client id)."""
@@ -156,11 +198,77 @@ class OxrsPanel:
         self._pushed_screens: set[int] = set()
         self._unsubs: list = []
         self.library = library
+        # Album art image name -> the revision currently on the panel. Both
+        # reset when the panel reconnects, since it keeps no images across a
+        # restart. Membership doubles as "this name is safe to reference".
+        self._album_art: dict[str, str] = {}
 
     @property
     def tiles(self) -> list[dict[str, Any]]:
         """Configured tiles from the options flow."""
         return self.entry.options.get(CONF_TILES, [])
+
+    @property
+    def album_art_tiles(self) -> list[dict[str, Any]]:
+        """Tiles configured to show the player's current artwork."""
+        return [t for t in self.tiles if t.get(CONF_ALBUM_ART)]
+
+    @property
+    def album_art_budget(self) -> int:
+        """Largest addImage payload album art may produce on this panel."""
+        return int(
+            self.entry.options.get(CONF_ALBUM_ART_BUDGET, DEFAULT_ALBUM_ART_BUDGET)
+        )
+
+    async def async_refresh_album_art(
+        self, tile: dict[str, Any], *, force: bool = False
+    ) -> bool:
+        """Re-encode and push this tile's artwork if it changed.
+
+        Returns True when the panel's idea of the art changed, so the caller
+        knows whether the tile itself needs re-publishing. Uploading an image
+        name the panel already holds updates every tile using it, so a plain
+        track change needs no tile command at all - but the first upload does,
+        because until then the tile has no background to reference.
+
+        force=True re-uploads even when the revision matches, which is what a
+        reconnect needs: the panel has forgotten every image, while this
+        object still remembers sending them.
+        """
+        entity_id = tile.get(CONF_ENTITY_ID) or tile.get(CONF_ACTION_ENTITY)
+        if not entity_id:
+            return False
+
+        name = art_image_name(entity_id)
+        state = self.hass.states.get(entity_id)
+        revision = art_revision(state)
+        url = art_source_url(self.hass, state)
+
+        if not url or revision is None:
+            # Nothing playing, or a player with no artwork. Forget the name so
+            # _augment_tile_state clears the background instead of leaving the
+            # previous cover on screen.
+            if self._album_art.pop(name, None) is not None:
+                _LOGGER.debug(f"Album art for {entity_id} no longer available")
+                return True
+            return False
+
+        if not force and self._album_art.get(name) == revision:
+            return False
+
+        payload = await async_build_art_payload(
+            self.hass, url, name, self.album_art_budget
+        )
+        if payload is None:
+            return False
+
+        await mqtt.async_publish(
+            self.hass, topic_cmnd(self.client_id), json.dumps(payload)
+        )
+        first_upload = name not in self._album_art
+        self._album_art[name] = revision
+        _LOGGER.debug(f"Pushed album art '{name}' for {entity_id}")
+        return first_upload or force
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -371,7 +479,7 @@ class OxrsPanel:
                             temp_tile = {**tile, CONF_ENTITY_ID: action_entity}
                             state = handler["build_state"](self.hass, temp_tile)
                             if state is not None:
-                                _augment_tile_state(self.hass, state, tile, self.library)
+                                _augment_tile_state(self.hass, state, tile, self.library, set(self._album_art))
                                 payload_tiles.append(state)
                 continue
             
@@ -382,7 +490,7 @@ class OxrsPanel:
                 continue
             state = handler["build_state"](self.hass, tile)
             if state is not None:
-                _augment_tile_state(self.hass, state, tile, self.library)
+                _augment_tile_state(self.hass, state, tile, self.library, set(self._album_art))
                 payload_tiles.append(state)
         
         if payload_tiles:
@@ -433,6 +541,7 @@ class OxrsPanel:
 
         if not image_names and not icon_names:
             _LOGGER.debug("No shared images or icons referenced by this panel's tiles")
+            await self._async_push_album_art()
             return
 
         _LOGGER.debug(
@@ -481,6 +590,47 @@ class OxrsPanel:
                 f"Error sending images/icons to panel: {err}",
                 exc_info=True
             )
+
+        await self._async_push_album_art()
+
+    async def _async_push_album_art(self) -> None:
+        """(Re)upload artwork for every album-art tile on this panel.
+
+        Always forces: this runs when the panel has just (re)connected, and a
+        panel keeps no images across a restart, so a cached revision here says
+        nothing about what the panel currently holds.
+        """
+        for tile in self.album_art_tiles:
+            try:
+                await self.async_refresh_album_art(tile, force=True)
+            except Exception as err:
+                _LOGGER.error(f"Error pushing album art: {err}", exc_info=True)
+
+    async def _async_update_album_art_tile(
+        self,
+        handler: TileType,
+        tile: dict[str, Any],
+        build_tile: dict[str, Any],
+    ) -> None:
+        """Refresh artwork, then publish the tile that shows it.
+
+        Ordered rather than fire-and-forget: on the first upload the tile can
+        only reference the image once the panel has it.
+        """
+        try:
+            await self.async_refresh_album_art(tile)
+        except Exception as err:
+            _LOGGER.error(f"Error refreshing album art: {err}", exc_info=True)
+
+        state = handler["build_state"](self.hass, build_tile)
+        if state is None:
+            return
+        _augment_tile_state(
+            self.hass, state, tile, self.library, set(self._album_art)
+        )
+        await mqtt.async_publish(
+            self.hass, topic_cmnd(self.client_id), json.dumps({"tiles": [state]})
+        )
 
     @callback
     def _on_entity_change(self, event: Event) -> None:
@@ -537,10 +687,20 @@ class OxrsPanel:
             temp_tile = tile
             if CONF_ACTION_ENTITY in tile and CONF_ENTITY_ID not in tile:
                 temp_tile = {**tile, CONF_ENTITY_ID: entity_id}
-            
+
+            if tile.get(CONF_ALBUM_ART):
+                # Artwork has to reach the panel before the tile can reference
+                # it, so these go through one ordered task rather than the
+                # fire-and-forget publish below. Cheap on a position update:
+                # the refresh returns immediately when the art has not changed.
+                self.hass.async_create_task(
+                    self._async_update_album_art_tile(handler, tile, temp_tile)
+                )
+                continue
+
             state = handler["build_state"](self.hass, temp_tile)
             if state is not None:
-                _augment_tile_state(self.hass, state, tile, self.library)
+                _augment_tile_state(self.hass, state, tile, self.library, set(self._album_art))
                 self.hass.async_create_task(
                     mqtt.async_publish(
                         self.hass,
@@ -583,7 +743,7 @@ class OxrsPanel:
         await asyncio.sleep(0.6)
         state = handler["build_state"](self.hass, build_tile)
         if state is not None:
-            _augment_tile_state(self.hass, state, augment_tile, self.library)
+            _augment_tile_state(self.hass, state, augment_tile, self.library, set(self._album_art))
             await mqtt.async_publish(
                 self.hass,
                 topic_cmnd(self.client_id),
