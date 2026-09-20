@@ -66,6 +66,26 @@ DEFAULT_ALBUM_ART_BUDGET = 12000
 MIN_ALBUM_ART_BUDGET = 2048
 MAX_ALBUM_ART_BUDGET = 65536
 
+# Panel-level display settings, stored in the entry options under this key as
+# {firmware_key: int}. Anything missing falls back to the default below.
+CONF_PANEL_SETTINGS = "panel_settings"
+
+# The firmware's own config keys, with the defaults and limits it documents
+# (main.cpp config schema; limits in globalDefines.h), as (default, min, max).
+# Every one is sent on each conf/ push, defaults included, so the panel ends up
+# in a known state rather than in whatever the admin page last left it.
+#
+# The three timeouts default to 0, which the firmware treats as DISABLED. A
+# panel left on those defaults never sleeps, which is what protects the screen
+# from burn-in, so anyone who wants that has to set a sleep timeout.
+PANEL_SETTINGS: dict[str, tuple[int, int, int]] = {
+    "noActivitySecondsToSleep": (0, 0, 3600),  # backlight off
+    "noActivitySecondsToHome": (0, 0, 600),  # back to the home screen
+    "noActivitySecondsToLock": (0, 0, 3600),  # PIN keypad lock
+    "tileBrightnessOn": (100, 75, 100),  # percent
+    "tileBrightnessOff": (10, 0, 25),  # percent
+}
+
 # A tile is 140px. If artwork cannot be squeezed into the budget even at two
 # colours, the encoder retries smaller rather than giving up outright.
 ALBUM_ART_SIZE = 140

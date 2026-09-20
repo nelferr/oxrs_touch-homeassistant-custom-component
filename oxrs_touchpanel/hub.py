@@ -30,6 +30,7 @@ from .const import (
     CONF_ICON,
     CONF_INDICATOR_SECONDARY_ENTITY_ID,
     CONF_LABEL,
+    CONF_PANEL_SETTINGS,
     CONF_SCREEN,
     CONF_SCREEN_NAMES,
     CONF_SUBLABEL_ENTITY_ID,
@@ -41,6 +42,7 @@ from .const import (
     DOMAIN,
     MANUFACTURER,
     MODEL,
+    PANEL_SETTINGS,
     signal_available,
     signal_tele,
     topic_cmnd,
@@ -220,6 +222,24 @@ class OxrsPanel:
             self.entry.options.get(CONF_ALBUM_ART_BUDGET, DEFAULT_ALBUM_ART_BUDGET)
         )
 
+    @property
+    def panel_settings(self) -> dict[str, int]:
+        """Display settings to push in conf/, one entry per firmware key.
+
+        Stored values are laid over the firmware defaults and clamped to the
+        firmware's limits, so an option saved by an older version, or edited by
+        hand, can never send the panel something it would reject.
+        """
+        stored = self.entry.options.get(CONF_PANEL_SETTINGS) or {}
+        settings: dict[str, int] = {}
+        for key, (default, low, high) in PANEL_SETTINGS.items():
+            try:
+                value = int(stored.get(key, default))
+            except (TypeError, ValueError):
+                value = default
+            settings[key] = max(low, min(high, value))
+        return settings
+
     async def async_refresh_album_art(
         self, tile: dict[str, Any], *, force: bool = False
     ) -> bool:
@@ -374,7 +394,9 @@ class OxrsPanel:
             )
         self._pushed_screens = set(screens)
 
-        conf: dict[str, Any] = {"screens": []}
+        # Display settings go first and always: the panel keeps whatever it was
+        # last told, so sending defaults explicitly is what makes them defaults.
+        conf: dict[str, Any] = {**self.panel_settings, "screens": []}
         for screen_idx, screen_tiles in sorted(screens.items()):
             tiles_conf: list[dict[str, Any]] = []
             for t in sorted(screen_tiles, key=lambda x: x[CONF_TILE]):

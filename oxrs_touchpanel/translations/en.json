@@ -31,6 +31,7 @@
           "manage_background_images": "Manage background images",
           "rename_screen": "Rename a screen",
           "manage_custom_icons": "Manage custom icons",
+          "panel_settings": "Panel display settings",
           "album_art_settings": "Album art settings"
         }
       },
@@ -144,6 +145,24 @@
         "description": "Album art is shrunk to fit one MQTT message. The default of {default} bytes is the largest size measured working on real hardware; raising it may make art silently fail to draw, and lowering it trades colour for reliability. Art is rendered at {size}px.",
         "data": {
           "album_art_budget": "Maximum size per image"
+        }
+      },
+      "panel_settings": {
+        "title": "Panel display settings",
+        "description": "The panel's own sleep and brightness settings, pre-filled with the firmware defaults and pushed to the panel each time it connects. A timeout of 0 disables that timeout, so a panel left on the defaults never turns its screen off.",
+        "data": {
+          "noActivitySecondsToSleep": "Screen Sleep Timeout (seconds)",
+          "noActivitySecondsToHome": "Home Screen Timeout (seconds)",
+          "noActivitySecondsToLock": "Lock Panel Timeout (seconds)",
+          "tileBrightnessOn": "Tile Brightness ON state (%)",
+          "tileBrightnessOff": "Tile Brightness OFF state (%)"
+        },
+        "data_description": {
+          "noActivitySecondsToSleep": "Turn the screen backlight off after this long without a touch (0 disables, up to 3600). A touch wakes it.",
+          "noActivitySecondsToHome": "Return to the home screen after this long without a touch (0 disables, up to 600).",
+          "noActivitySecondsToLock": "Lock the panel behind its PIN keypad after this long without a touch (0 disables, up to 3600).",
+          "tileBrightnessOn": "Brightness of tiles in their on state (75 to 100).",
+          "tileBrightnessOff": "Brightness of tiles in their off state (0 to 25)."
         }
       }
     },
