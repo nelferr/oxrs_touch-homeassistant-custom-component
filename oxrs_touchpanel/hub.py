@@ -250,6 +250,17 @@ class OxrsPanel:
             settings[key] = max(low, min(high, value))
         return settings
 
+    async def async_restart(self) -> None:
+        """Reboot the panel with the firmware's own restart command.
+
+        The panel drops off MQTT and comes back announcing itself online, and
+        _on_lwt re-pushes the configuration when it does - so the tiles are
+        rebuilt without anything else being done.
+        """
+        await mqtt.async_publish(
+            self.hass, topic_cmnd(self.client_id), json.dumps({"restart": True})
+        )
+
     @property
     def background_color(self) -> dict[str, int]:
         """Background colour to push, as the firmware's {"r", "g", "b"}.

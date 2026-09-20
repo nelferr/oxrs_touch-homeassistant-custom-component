@@ -171,6 +171,33 @@ flexible-actions format) are not offered.
 - **A background image deleted from the library** shows as "none" when editing, and
   saving drops the dead reference.
 
+### A.7 Rebooting a panel, and cleaning up when one is removed
+
+**Reboot button.** A **Reboot** button sits in the device's Configuration group, next to
+Push configuration. It publishes `{"restart": true}` to `cmnd/<id>`, which the firmware
+handles by calling `ESP.restart()` (`OXRS-IO-WT32-ESP32-LIB`, `OXRS_WT32.cpp`). It is not
+retained - a retained restart would reboot the panel on every reconnect. The panel drops
+off MQTT and comes back announcing itself online, and `_on_lwt` re-pushes the configuration
+when it does; if the tiles do not return, **Push configuration** rebuilds them.
+
+**Removal cleanup.** A panel publishes two RETAINED messages
+(`OXRS-IO-MQTT-ESP32-LIB`): `stat/<id>/adopt` and `stat/<id>/lwt`. The manifest's
+`"mqtt": ["stat/+/adopt"]` is what makes HA offer a panel for setup, and a retained message
+is redelivered on every HA start and MQTT reconnect - so a panel that has been removed, or
+was never really there, is "discovered" again indefinitely even with nothing on the network
+publishing it. `async_remove_entry` (which HA calls after unloading a removed entry) now
+deletes both, by publishing an empty retained payload to each.
+
+- **A panel that is still online is left alone.** `retained.py` reads the retained LWT first;
+  `{"online": true}` means the messages are not stale, and they are how a panel is found
+  again if it is deleted and re-added. Anything else - offline, malformed, or no LWT at all -
+  is treated as gone.
+- **It can never block a removal.** MQTT being down, or the broker refusing, is logged with
+  the manual fix (publish an empty retained message to `stat/<id>/adopt`) and swallowed.
+- **Only removal triggers it.** Ghosts that were *discovered but never added* have no entry to
+  remove, so this cannot reach them: use Ignore, or publish an empty retained message to
+  their `stat/<id>/adopt` (HA's MQTT "Publish a packet" has a Retain switch).
+
 ### A.4 Icons
 
 The 65 icons generated for this catalog ship inside the integration as
@@ -632,6 +659,11 @@ retries smaller before giving up.
 - **Losing artwork clears the tile explicitly.** The panel keeps whatever image
   it was last given, so an idle player sends `backgroundImage: {}` with empty
   text, restoring the icon, rather than leaving a stale cover on screen.
+- **The download reads to the end of the stream in chunks.** aiohttp's `read(n)` returns
+  what is buffered so far, not the whole body, so any cover arriving in more than one
+  chunk came back truncated and Pillow refused it (`image file is truncated`). It is now
+  `iter_chunked` with the 4 MB cap enforced as data arrives, which also covers a response
+  with no `Content-Length`. (Fixed in v1.11.0; every cover had been failing before that.)
 - **Everything is best-effort.** A failed fetch, a missing Pillow or an
   impossible budget leaves a working transport tile with its icon intact.
 

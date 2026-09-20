@@ -46,7 +46,7 @@
       "add_tile_type": {
         "title": "Add a tile — choose type (screen {screen})",
         "data": {
-          "tile_type": "Tile type"
+          "type": "Tile type"
         }
       },
       "add_tile_details": {
