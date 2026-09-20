@@ -26,6 +26,7 @@ from .const import (
     CONF_ACTIONS,
     CONF_ALBUM_ART,
     CONF_ALBUM_ART_BUDGET,
+    CONF_BACKGROUND_COLOR,
     CONF_ENTITY_ID,
     CONF_ICON,
     CONF_INDICATOR_SECONDARY_ENTITY_ID,
@@ -38,6 +39,7 @@ from .const import (
     CONF_TILES,
     CONF_TYPE,
     DEFAULT_ALBUM_ART_BUDGET,
+    DEFAULT_BACKGROUND_COLOR,
     DEFAULT_LAYOUT,
     DOMAIN,
     MANUFACTURER,
@@ -240,6 +242,24 @@ class OxrsPanel:
             settings[key] = max(low, min(high, value))
         return settings
 
+    @property
+    def background_color(self) -> dict[str, int]:
+        """Background colour to push, as the firmware's {"r", "g", "b"}.
+
+        The firmware casts each channel to a byte, so an out-of-range number
+        would wrap round to a different colour rather than being rejected.
+        Clamping here is what stops a stored 300 becoming 44.
+        """
+        stored = self.entry.options.get(CONF_BACKGROUND_COLOR)
+        channels = DEFAULT_BACKGROUND_COLOR
+        if isinstance(stored, (list, tuple)) and len(stored) == 3:
+            try:
+                channels = tuple(max(0, min(255, int(c))) for c in stored)
+            except (TypeError, ValueError):
+                pass
+        r, g, b = channels
+        return {"r": r, "g": g, "b": b}
+
     async def async_refresh_album_art(
         self, tile: dict[str, Any], *, force: bool = False
     ) -> bool:
@@ -396,7 +416,11 @@ class OxrsPanel:
 
         # Display settings go first and always: the panel keeps whatever it was
         # last told, so sending defaults explicitly is what makes them defaults.
-        conf: dict[str, Any] = {**self.panel_settings, "screens": []}
+        conf: dict[str, Any] = {
+            **self.panel_settings,
+            "backgroundColorRgb": self.background_color,
+            "screens": [],
+        }
         for screen_idx, screen_tiles in sorted(screens.items()):
             tiles_conf: list[dict[str, Any]] = []
             for t in sorted(screen_tiles, key=lambda x: x[CONF_TILE]):

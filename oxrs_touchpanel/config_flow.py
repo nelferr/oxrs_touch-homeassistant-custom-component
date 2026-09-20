@@ -28,6 +28,7 @@ from .const import (
     BUILTIN_ICONS,
     CONF_ALBUM_ART,
     CONF_ALBUM_ART_BUDGET,
+    CONF_BACKGROUND_COLOR,
     CONF_CLIENT_ID,
     CONF_ENTITY_ID,
     CONF_ICON,
@@ -43,6 +44,7 @@ from .const import (
     CONF_TILES,
     CONF_TYPE,
     DEFAULT_ALBUM_ART_BUDGET,
+    DEFAULT_BACKGROUND_COLOR,
     DEFAULT_LAYOUT,
     DOMAIN,
     LIBRARY_DATA_KEY,
@@ -319,11 +321,13 @@ class OxrsOptionsFlow(OptionsFlow):
     async def async_step_panel_settings(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Set the panel's sleep, home and lock timeouts and tile brightness.
+        """Set the panel's timeouts, brightness, sensor interval and background.
 
         These are the firmware's own settings, the same ones its admin page
-        offers, and each is pre-filled with the firmware default. The form is
-        built from PANEL_SETTINGS so its limits are the ones the hub clamps to.
+        offers, and each is pre-filled with the firmware default. The numeric
+        fields are built from PANEL_SETTINGS so their limits are the ones the
+        hub clamps to; the background colour uses HA's colour picker rather
+        than three separate 0-255 numbers.
         """
         stored = self._entry.options.get(CONF_PANEL_SETTINGS) or {}
         if user_input is not None:
@@ -331,27 +335,40 @@ class OxrsOptionsFlow(OptionsFlow):
             options[CONF_PANEL_SETTINGS] = {
                 key: int(user_input[key]) for key in PANEL_SETTINGS if key in user_input
             }
+            if CONF_BACKGROUND_COLOR in user_input:
+                options[CONF_BACKGROUND_COLOR] = [
+                    int(c) for c in user_input[CONF_BACKGROUND_COLOR]
+                ]
             return self.async_create_entry(title="", data=options)
 
-        schema = vol.Schema(
-            {
-                vol.Required(
-                    key, default=stored.get(key, default)
-                ): selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=low,
-                        max=high,
-                        step=1,
-                        mode="box",
-                        unit_of_measurement=(
-                            "%" if key.startswith("tileBrightness") else "seconds"
-                        ),
-                    )
+        fields: dict[Any, Any] = {
+            vol.Required(
+                key, default=stored.get(key, default)
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=low,
+                    max=high,
+                    step=1,
+                    mode="box",
+                    unit_of_measurement=(
+                        "%" if key.startswith("tileBrightness") else "seconds"
+                    ),
                 )
-                for key, (default, low, high) in PANEL_SETTINGS.items()
-            }
+            )
+            for key, (default, low, high) in PANEL_SETTINGS.items()
+        }
+        fields[
+            vol.Required(
+                CONF_BACKGROUND_COLOR,
+                default=list(
+                    self._entry.options.get(CONF_BACKGROUND_COLOR)
+                    or DEFAULT_BACKGROUND_COLOR
+                ),
+            )
+        ] = selector.ColorRGBSelector()
+        return self.async_show_form(
+            step_id="panel_settings", data_schema=vol.Schema(fields)
         )
-        return self.async_show_form(step_id="panel_settings", data_schema=schema)
 
     async def async_step_album_art_settings(
         self, user_input: dict[str, Any] | None = None
