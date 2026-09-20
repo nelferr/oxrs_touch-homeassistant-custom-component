@@ -20,6 +20,7 @@ from .albumart import (
     art_source_url,
     async_build_art_payload,
 )
+from .colors import BLACK, normalize_rgb, override_payload, rgb_payload
 from .const import (
     CONF_ACTION_ENTITY,
     CONF_ACTION_TILE_TYPE,
@@ -29,10 +30,12 @@ from .const import (
     CONF_BACKGROUND_COLOR,
     CONF_ENTITY_ID,
     CONF_ICON,
+    CONF_ICON_ON_COLOR,
     CONF_INDICATOR_SECONDARY_ENTITY_ID,
     CONF_LABEL,
     CONF_PANEL_SETTINGS,
     CONF_SCREEN,
+    CONF_SCREEN_COLORS,
     CONF_SCREEN_NAMES,
     CONF_SUBLABEL_ENTITY_ID,
     CONF_TILE,
@@ -40,6 +43,7 @@ from .const import (
     CONF_TYPE,
     DEFAULT_ALBUM_ART_BUDGET,
     DEFAULT_BACKGROUND_COLOR,
+    DEFAULT_ICON_ON_COLOR,
     DEFAULT_LAYOUT,
     DOMAIN,
     MANUFACTURER,
@@ -254,15 +258,21 @@ class OxrsPanel:
         would wrap round to a different colour rather than being rejected.
         Clamping here is what stops a stored 300 becoming 44.
         """
-        stored = self.entry.options.get(CONF_BACKGROUND_COLOR)
-        channels = DEFAULT_BACKGROUND_COLOR
-        if isinstance(stored, (list, tuple)) and len(stored) == 3:
-            try:
-                channels = tuple(max(0, min(255, int(c))) for c in stored)
-            except (TypeError, ValueError):
-                pass
-        r, g, b = channels
-        return {"r": r, "g": g, "b": b}
+        channels = normalize_rgb(self.entry.options.get(CONF_BACKGROUND_COLOR))
+        return rgb_payload(channels or DEFAULT_BACKGROUND_COLOR)
+
+    @property
+    def icon_on_color(self) -> dict[str, int]:
+        """Colour of an icon in its "on" state, as the firmware's {"r", "g", "b"}.
+
+        The firmware reads pure black as "unset" and substitutes its default, so
+        a stored black is sent as that default instead - the payload then says
+        what the panel will actually show.
+        """
+        channels = normalize_rgb(self.entry.options.get(CONF_ICON_ON_COLOR))
+        if channels is None or channels == BLACK:
+            channels = DEFAULT_ICON_ON_COLOR
+        return rgb_payload(channels)
 
     async def async_refresh_album_art(
         self, tile: dict[str, Any], *, force: bool = False
@@ -423,6 +433,7 @@ class OxrsPanel:
         conf: dict[str, Any] = {
             **self.panel_settings,
             "backgroundColorRgb": self.background_color,
+            "iconOnColorRgb": self.icon_on_color,
             "screens": [],
         }
         for screen_idx, screen_tiles in sorted(screens.items()):
@@ -486,17 +497,30 @@ class OxrsPanel:
                     if config_extra is not None:
                         tile_conf.update(config_extra(self.hass, t))
                 
+                # A tile's own colour; without one it inherits its screen's.
+                tile_color = override_payload(t.get(CONF_BACKGROUND_COLOR))
+                if tile_color is not None:
+                    tile_conf["backgroundColorRgb"] = tile_color
+
                 tiles_conf.append(tile_conf)
             
             screen_names = self.entry.options.get(CONF_SCREEN_NAMES, {})
-            conf["screens"].append(
-                {
-                    "screen": screen_idx,
-                    "label": screen_names.get(str(screen_idx), self.entry.title),
-                    "screenLayout": DEFAULT_LAYOUT,
-                    "tiles": tiles_conf,
-                }
+            screen_conf: dict[str, Any] = {
+                "screen": screen_idx,
+                "label": screen_names.get(str(screen_idx), self.entry.title),
+                "screenLayout": DEFAULT_LAYOUT,
+                "tiles": tiles_conf,
+            }
+            # A screen's own colour; without one it inherits the panel's.
+            screen_colors = self.entry.options.get(CONF_SCREEN_COLORS)
+            screen_color = override_payload(
+                screen_colors.get(str(screen_idx))
+                if isinstance(screen_colors, dict)
+                else None
             )
+            if screen_color is not None:
+                screen_conf["backgroundColorRgb"] = screen_color
+            conf["screens"].append(screen_conf)
 
         await mqtt.async_publish(
             self.hass, topic_conf(self.client_id), json.dumps(conf)

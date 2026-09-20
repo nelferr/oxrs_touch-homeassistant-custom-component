@@ -85,8 +85,8 @@ hides the icon, empty restores it**. Follow the code, not the docs.
 
 ### A.5 Panel display settings
 
-The firmware has seven panel-level settings: five that keep a screen from being left lit
-indefinitely, how often the panel reports its sensors, and the background colour. They are the same ones its admin page shows (the page renders the
+The firmware has eight panel-level settings: five that keep a screen from being left lit
+indefinitely, how often the panel reports its sensors, and two colours. They are the same ones its admin page shows (the page renders the
 `configSchema` the device announces; none of them are in the page's own HTML),
 and they arrive on `conf/`. (`climateUpdateSeconds` is defined in the WT32 library, not
 `main.cpp`, and the device only lists it when it has an SHT20 or an S3 chip.) The options menu's **Panel display settings** step
@@ -104,12 +104,25 @@ key, default and limits, and both the form and the hub read from it.
 
 - **Background colour** (`backgroundColorRgb`, `{"r","g","b"}` 0-255) is the seventh
   setting, chosen with HA's colour picker rather than three number fields and stored
-  as `[r, g, b]`. It applies to every screen and to every tile without a colour of its
-  own; this integration sends no per-tile or per-screen colours, so in practice it is
-  the whole panel. Default black. The firmware treats pure black as "unset" and
+  as `[r, g, b]`. It applies to every screen, and to every tile, that has no colour of
+  its own - see the cascade below for setting those. Default black. The firmware treats pure black as "unset" and
   resolves it to its default, also black, so choosing black and choosing nothing are
   the same. The firmware casts each channel to a byte, so an out-of-range number
   would wrap round to a different colour; the hub clamps to 0-255 first.
+- **Colours cascade tile -> screen -> panel.** Three levels, one firmware key
+  (`backgroundColorRgb`) at each. At the screen and tile levels the firmware reads
+  pure black as "unset" and inherits from the level above, so black is how a screen
+  or tile says "no colour of its own" and this integration never stores or sends
+  it. The consequence is that a screen cannot be painted black over a non-black
+  panel colour, nor a tile black on a coloured screen.
+  - *Panel* colour: **Panel display settings**.
+  - *Screen* colour: **Screen name and colour**, a two-step flow (pick the screen,
+    then name and colour) so the picker shows that screen's current colour.
+  - *Tile* colour: the picker on the add-tile form.
+- **Icon "on" colour** (`iconOnColorRgb`, default R91 G190 B91, light green) is
+  panel-wide and chosen with the same picker. The firmware also reads black as
+  unset here and substitutes that default, so the hub sends the default rather
+  than a black it would ignore.
 - **0 disables a timeout.** On the defaults the panel never sleeps, which is what
   leaves a static screen lit; the integration defaults to the firmware's values
   rather than choosing a sleep time for the user.
@@ -117,7 +130,7 @@ key, default and limits, and both the form and the hub read from it.
   straight to 0. The `backlight` command on `cmnd/` (`brightness` 1–100, or
   `state` `sleep`/`awake`) and the tile brightness settings are the nearest
   things to dimming.
-- **All seven are sent on every `conf/` push, defaults included,** because the
+- **All eight are sent on every `conf/` push, defaults included,** because the
   panel keeps whatever it was last told. That also means a value set on the
   admin page is overwritten by this integration's value the next time the panel
   connects.

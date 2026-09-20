@@ -98,6 +98,19 @@ PANEL_SETTINGS: dict[str, tuple[int, int, int]] = {
 CONF_BACKGROUND_COLOR = "background_color"
 DEFAULT_BACKGROUND_COLOR = (0, 0, 0)
 
+# The same key holds a single tile's own background colour, on the tile's dict.
+# Colours cascade tile -> screen -> panel, and at the tile and screen levels the
+# firmware spells "no colour, inherit" as pure black, so black is never stored.
+
+# Per-screen background colours, in the entry options as {"<screen>": [r, g, b]}
+# - the same shape as CONF_SCREEN_NAMES.
+CONF_SCREEN_COLORS = "screen_colors"
+
+# Colour of an icon in its "on" state, panel-wide, stored as [r, g, b]. Pure
+# black is "unset" to the firmware, which then uses its default light green.
+CONF_ICON_ON_COLOR = "icon_on_color"
+DEFAULT_ICON_ON_COLOR = (91, 190, 91)
+
 # A tile is 140px. If artwork cannot be squeezed into the budget even at two
 # colours, the encoder retries smaller rather than giving up outright.
 ALBUM_ART_SIZE = 140
