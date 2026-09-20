@@ -227,6 +227,10 @@ class OxrsOptionsFlow(OptionsFlow):
         self._new_screen: int = 1
         # The screen whose name and colour are being edited.
         self._edit_screen: int = 1
+        # Index into self._tiles of the tile being edited. The draft lives in
+        # _new_tile_config and only replaces the original on the last step, so
+        # closing the dialog part-way changes nothing.
+        self._edit_index: int = -1
         self._new_tile_config: dict[str, Any] | None = None
         # Playlists fetched from Music Assistant for the tile being added, kept
         # so a validation error re-shows the form without fetching again.
@@ -315,6 +319,7 @@ class OxrsOptionsFlow(OptionsFlow):
             step_id="init",
             menu_options=[
                 "add_tile",
+                "edit_tile",
                 "remove_tile",
                 "rename_screen",
                 "manage_background_images",
@@ -618,13 +623,183 @@ class OxrsOptionsFlow(OptionsFlow):
             _LOGGER.error(f"Error in async_step_add_tile_type: {err}", exc_info=True)
             return self.async_abort(reason="invalid_type")
 
+    @staticmethod
+    def _apply_details_input(
+        tile: dict[str, Any], tile_type: str, user_input: dict[str, Any]
+    ) -> None:
+        """Copy the optional fields of the tile details form onto a tile config.
+
+        Shared by adding and editing so the two cannot drift. A field left empty
+        is REMOVED from the tile rather than kept, which is what lets an edit
+        clear a sub-label source or turn album art off.
+        """
+
+        def set_or_clear(key: str, value: Any) -> None:
+            if value:
+                tile[key] = value
+            else:
+                tile.pop(key, None)
+
+        set_or_clear(CONF_SUBLABEL_ENTITY_ID, user_input.get(CONF_SUBLABEL_ENTITY_ID))
+        # Black means "no colour of its own": the tile follows its screen.
+        color = normalize_rgb(user_input.get(CONF_BACKGROUND_COLOR))
+        set_or_clear(
+            CONF_BACKGROUND_COLOR,
+            list(color) if color is not None and color != BLACK else None,
+        )
+        if tile_type == "indicator":
+            set_or_clear(
+                CONF_INDICATOR_SECONDARY_ENTITY_ID,
+                user_input.get(CONF_INDICATOR_SECONDARY_ENTITY_ID),
+            )
+        if tile_type == "transport":
+            set_or_clear(CONF_ALBUM_ART, True if user_input.get(CONF_ALBUM_ART) else None)
+
+    def _tile_details_schema(
+        self,
+        tile_type: str,
+        free: list[int],
+        current: dict[str, Any] | None = None,
+    ) -> vol.Schema:
+        """The details form for a tile: position, entity, label, icon and extras.
+
+        Used for adding (current is None, everything starts blank) and for
+        editing (current is the tile being edited, and every field starts on its
+        present value). One builder, so the two forms cannot disagree.
+        """
+        definition = TILE_TYPES[tile_type]
+        editing = current is not None
+        current = current or {}
+
+        # Tile types may narrow the picker past the domain, so a door tile
+        # offers door and window contacts rather than every binary_sensor.
+        entity_config: dict[str, Any] = {"domain": definition["domain"]}
+        if definition.get("device_class"):
+            entity_config["device_class"] = definition["device_class"]
+        if definition.get("integration"):
+            entity_config["integration"] = definition["integration"]
+        # Light capability and availability can only be judged by looking at
+        # live state, which the selector cannot do - so pass it the resolved
+        # list instead. Falling back to the plain domain picker when nothing
+        # qualifies beats showing the user an empty dropdown.
+        eligible = eligible_entity_ids(self.hass, definition)
+        if eligible:
+            # HA validates a submitted entity against include_entities, and the
+            # list drops anything unavailable. When editing, the tile's own
+            # entity may be unavailable right now; leaving it out would make the
+            # form impossible to submit without changing it.
+            current_entity = current.get(CONF_ENTITY_ID)
+            entity_config["include_entities"] = (
+                eligible + [current_entity]
+                if current_entity and current_entity not in eligible
+                else eligible
+            )
+        else:
+            _LOGGER.warning(
+                "No available entity is compatible with tile type '%s'; "
+                "falling back to an unfiltered %s picker",
+                tile_type,
+                definition["domain"],
+            )
+
+        available_icons = self._available_icon_names()
+        icon_options = self._build_icon_options(suggested_icons(definition, available_icons))
+        icon_default = (
+            current.get(CONF_ICON) or definition["icon"]
+            if editing
+            else default_icon(definition, available_icons)
+        )
+        # SelectSelector rejects a value that is not one of its options. A tile
+        # can outlive its icon (the library lets one be deleted), so keep the
+        # current one selectable rather than making the form unsubmittable.
+        if editing and icon_default not in {o["value"] for o in icon_options}:
+            icon_options.append(
+                {"value": icon_default, "label": f"{icon_default} (not in the library)"}
+            )
+
+        def optional_entity(key: str, config: dict[str, Any]) -> tuple[Any, Any]:
+            # suggested_value rather than default: it pre-fills the field but
+            # still lets the user clear it, which a default would not.
+            value = current.get(key)
+            marker = (
+                vol.Optional(key, description={"suggested_value": value})
+                if editing and value
+                else vol.Optional(key)
+            )
+            return marker, selector.EntitySelector(selector.EntitySelectorConfig(**config))
+
+        schema_dict: dict[Any, Any] = {
+            vol.Required(
+                CONF_TILE,
+                default=str(current[CONF_TILE] if editing else free[0]),
+            ): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[
+                        {"value": str(i), "label": f"Position {i}"} for i in free
+                    ],
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                )
+            ),
+            (
+                vol.Required(CONF_ENTITY_ID, default=current[CONF_ENTITY_ID])
+                if editing
+                else vol.Required(CONF_ENTITY_ID)
+            ): selector.EntitySelector(selector.EntitySelectorConfig(**entity_config)),
+            vol.Optional(
+                CONF_LABEL, default=current.get(CONF_LABEL, "")
+            ): selector.TextSelector(),
+            vol.Optional(CONF_ICON, default=icon_default): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=icon_options,
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                )
+            ),
+        }
+        # Common capability: optional subLabel source, any tile type, any domain
+        # (e.g. a sensor's value, another entity's state).
+        marker, sel = optional_entity(CONF_SUBLABEL_ENTITY_ID, {})
+        schema_dict[marker] = sel
+        # Left on black, the tile follows its screen's colour.
+        schema_dict[
+            vol.Required(
+                CONF_BACKGROUND_COLOR,
+                default=list(normalize_rgb(current.get(CONF_BACKGROUND_COLOR)) or BLACK),
+            )
+        ] = selector.ColorRGBSelector()
+        if tile_type == "transport":
+            # transport tile: optionally show the player's current cover as the
+            # tile background. The firmware needs non-empty text to hide an
+            # icon, so art and the _play/_pause icon cannot both be on screen -
+            # the tile keeps the title as its subLabel instead.
+            schema_dict[
+                vol.Optional(CONF_ALBUM_ART, default=bool(current.get(CONF_ALBUM_ART)))
+            ] = selector.BooleanSelector()
+        if tile_type == "indicator":
+            # indicator tile: optional second sensor shown alongside the primary
+            # one (e.g. temperature + humidity in one tile). It renders through
+            # the same numeric-only field, so it gets the same eligibility list
+            # as the primary.
+            secondary_config: dict[str, Any] = {"domain": "sensor"}
+            if eligible:
+                secondary = current.get(CONF_INDICATOR_SECONDARY_ENTITY_ID)
+                secondary_config["include_entities"] = (
+                    eligible + [secondary]
+                    if secondary and secondary not in eligible
+                    else eligible
+                )
+            marker, sel = optional_entity(
+                CONF_INDICATOR_SECONDARY_ENTITY_ID, secondary_config
+            )
+            schema_dict[marker] = sel
+        return vol.Schema(schema_dict)
+
     async def async_step_add_tile_details(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Step 2: pick a FREE position, the entity, label and icon."""
         try:
             _LOGGER.debug(f"async_step_add_tile_details called with input: {list(user_input.keys()) if user_input else 'None'}")
-            
+
             assert self._new_type is not None
             definition = TILE_TYPES[self._new_type]
             _LOGGER.debug(f"Tile type definition: {self._new_type}")
@@ -634,9 +809,9 @@ class OxrsOptionsFlow(OptionsFlow):
                 t[CONF_TILE] for t in self._tiles if t[CONF_SCREEN] == self._new_screen
             }
             free = [i for i in range(1, max_positions + 1) if i not in used]
-            
+
             _LOGGER.debug(f"Free positions: {free}")
-            
+
             if not free:
                 _LOGGER.warning(f"Screen {self._new_screen} is full")
                 return self.async_abort(reason="screen_full")
@@ -652,110 +827,16 @@ class OxrsOptionsFlow(OptionsFlow):
                     CONF_LABEL: user_input.get(CONF_LABEL, ""),
                     CONF_ICON: user_input.get(CONF_ICON, definition["icon"]),
                 }
-                sublabel_entity_id = user_input.get(CONF_SUBLABEL_ENTITY_ID)
-                if sublabel_entity_id:
-                    self._new_tile_config[CONF_SUBLABEL_ENTITY_ID] = sublabel_entity_id
-                # Black means "no colour of its own": the tile follows its screen.
-                tile_color = normalize_rgb(user_input.get(CONF_BACKGROUND_COLOR))
-                if tile_color is not None and tile_color != BLACK:
-                    self._new_tile_config[CONF_BACKGROUND_COLOR] = list(tile_color)
-                if self._new_type == "indicator":
-                    secondary_entity_id = user_input.get(CONF_INDICATOR_SECONDARY_ENTITY_ID)
-                    if secondary_entity_id:
-                        self._new_tile_config[CONF_INDICATOR_SECONDARY_ENTITY_ID] = secondary_entity_id
-                if self._new_type == "transport" and user_input.get(CONF_ALBUM_ART):
-                    self._new_tile_config[CONF_ALBUM_ART] = True
+                self._apply_details_input(self._new_tile_config, self._new_type, user_input)
                 if self._new_type == "playlists":
                     return await self.async_step_add_tile_playlists()
                 # Go to background image selection step
                 return await self.async_step_add_tile_background()
 
-            tile_options = [
-                {"value": str(i), "label": f"Position {i}"}
-                for i in free
-            ]
-            # Tile types may narrow the picker past the domain, so a door tile
-            # offers door and window contacts rather than every binary_sensor.
-            entity_config: dict[str, Any] = {"domain": definition["domain"]}
-            if definition.get("device_class"):
-                entity_config["device_class"] = definition["device_class"]
-            if definition.get("integration"):
-                entity_config["integration"] = definition["integration"]
-            # Light capability and availability can only be judged by looking at
-            # live state, which the selector cannot do - so pass it the resolved
-            # list instead. Falling back to the plain domain picker when nothing
-            # qualifies beats showing the user an empty dropdown.
-            eligible = eligible_entity_ids(self.hass, definition)
-            if eligible:
-                entity_config["include_entities"] = eligible
-            else:
-                _LOGGER.warning(
-                    "No available entity is compatible with tile type '%s'; "
-                    "falling back to an unfiltered %s picker",
-                    self._new_type,
-                    definition["domain"],
-                )
-            available_icons = self._available_icon_names()
-            schema_dict: dict[Any, Any] = {
-                vol.Required(
-                    CONF_TILE, default=str(free[0])
-                ): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=tile_options,
-                        mode=selector.SelectSelectorMode.DROPDOWN,
-                    )
-                ),
-                vol.Required(CONF_ENTITY_ID): selector.EntitySelector(
-                    selector.EntitySelectorConfig(**entity_config)
-                ),
-                vol.Optional(CONF_LABEL, default=""): selector.TextSelector(),
-                vol.Optional(
-                    CONF_ICON, default=default_icon(definition, available_icons)
-                ): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=self._build_icon_options(
-                            suggested_icons(definition, available_icons)
-                        ),
-                        mode=selector.SelectSelectorMode.DROPDOWN,
-                    )
-                ),
-                # Common capability: optional subLabel source, any tile type,
-                # any domain (e.g. a sensor's value, another entity's state).
-                vol.Optional(CONF_SUBLABEL_ENTITY_ID): selector.EntitySelector(
-                    selector.EntitySelectorConfig()
-                ),
-                # Left on black, the tile follows its screen's colour.
-                vol.Required(
-                    CONF_BACKGROUND_COLOR, default=list(BLACK)
-                ): selector.ColorRGBSelector(),
-            }
-            if self._new_type == "transport":
-                # transport tile: optionally show the player's current cover as
-                # the tile background. The firmware needs non-empty text to hide
-                # an icon, so art and the _play/_pause icon cannot both be on
-                # screen - the tile keeps the title as its subLabel instead.
-                schema_dict[
-                    vol.Optional(CONF_ALBUM_ART, default=False)
-                ] = selector.BooleanSelector()
-            if self._new_type == "indicator":
-                # indicator tile: optional second sensor shown alongside the
-                # primary one (e.g. temperature + humidity in one tile). It
-                # renders through the same numeric-only field, so it gets the
-                # same eligibility list as the primary.
-                secondary_config: dict[str, Any] = {"domain": "sensor"}
-                if eligible:
-                    secondary_config["include_entities"] = eligible
-                schema_dict[
-                    vol.Optional(CONF_INDICATOR_SECONDARY_ENTITY_ID)
-                ] = selector.EntitySelector(
-                    selector.EntitySelectorConfig(**secondary_config)
-                )
-            schema = vol.Schema(schema_dict)
-            
             _LOGGER.debug("Showing tile details form")
             return self.async_show_form(
                 step_id="add_tile_details",
-                data_schema=schema,
+                data_schema=self._tile_details_schema(self._new_type, free),
                 description_placeholders={
                     "type": definition["label"],
                     "screen": str(self._new_screen),
@@ -765,18 +846,35 @@ class OxrsOptionsFlow(OptionsFlow):
             _LOGGER.error(f"Error in async_step_add_tile_details: {err}", exc_info=True)
             return self.async_abort(reason="invalid_details")
 
-    async def async_step_add_tile_playlists(
-        self, user_input: dict[str, Any] | None = None
+    async def _async_playlist_step(
+        self,
+        *,
+        step_id: str,
+        user_input: dict[str, Any] | None,
+        next_step: Any,
+        preselect: list[str] | None = None,
+        keep_on_failure: bool = False,
     ) -> ConfigFlowResult:
-        """Step 2b, playlist tiles only: pick the playlists the panel lists."""
+        """Pick the playlists a playlists tile lists, for adding or editing.
+
+        preselect ticks the playlists a tile already has. keep_on_failure is for
+        editing: when Music Assistant cannot be reached the step is skipped and
+        the tile keeps the playlists it has, so its other settings can still be
+        changed. Adding has nothing to fall back on and aborts instead.
+        """
         assert self._new_tile_config is not None
 
         if self._playlist_choices is None:
             choices = await self._async_fetch_playlists(self._new_tile_config[CONF_ENTITY_ID])
-            if choices is None:
-                return self.async_abort(reason="music_assistant_unavailable")
             if not choices:
-                return self.async_abort(reason="no_playlists")
+                if keep_on_failure:
+                    _LOGGER.warning(
+                        "Could not list Music Assistant playlists; keeping the tile's current ones"
+                    )
+                    return await next_step()
+                return self.async_abort(
+                    reason="music_assistant_unavailable" if choices is None else "no_playlists"
+                )
             self._playlist_choices = choices
 
         errors: dict[str, str] = {}
@@ -792,11 +890,21 @@ class OxrsOptionsFlow(OptionsFlow):
                     by_uri[uri] for uri in chosen if uri in by_uri
                 ]
                 self._playlist_choices = None
-                return await self.async_step_add_tile_background()
+                return await next_step()
 
+        if preselect is None:
+            key = vol.Required(CONF_PLAYLISTS)
+        else:
+            # Only tick playlists that still exist: one deleted from Music
+            # Assistant is not among the options, and a default outside the
+            # options would fail the form's own validation.
+            known = {p["uri"] for p in self._playlist_choices}
+            key = vol.Required(
+                CONF_PLAYLISTS, default=[uri for uri in preselect if uri in known]
+            )
         schema = vol.Schema(
             {
-                vol.Required(CONF_PLAYLISTS): selector.SelectSelector(
+                key: selector.SelectSelector(
                     selector.SelectSelectorConfig(
                         options=[
                             {"value": p["uri"], "label": p["name"]}
@@ -809,11 +917,28 @@ class OxrsOptionsFlow(OptionsFlow):
             }
         )
         return self.async_show_form(
-            step_id="add_tile_playlists",
+            step_id=step_id,
             data_schema=schema,
             errors=errors,
             description_placeholders={"max": str(MAX_PLAYLISTS)},
         )
+
+    async def async_step_add_tile_playlists(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Step 2b, playlist tiles only: pick the playlists the panel lists."""
+        return await self._async_playlist_step(
+            step_id="add_tile_playlists",
+            user_input=user_input,
+            next_step=self.async_step_add_tile_background,
+        )
+
+    def _background_image_choices(self) -> list[dict[str, str]]:
+        """Every image in the shared library - added on ANY panel, not just this one."""
+        library = self._get_library()
+        if not library:
+            return []
+        return [{"value": img["name"], "label": img["name"]} for img in library.list_images()]
 
     async def async_step_add_tile_background(
         self, user_input: dict[str, Any] | None = None
@@ -821,39 +946,31 @@ class OxrsOptionsFlow(OptionsFlow):
         """Step 3: optionally select a background image for the tile."""
         try:
             _LOGGER.debug(f"async_step_add_tile_background called with input: {list(user_input.keys()) if user_input else 'None'}")
-            
+
             assert self._new_tile_config is not None
-            
+
             if user_input is not None:
                 # Add tile to list
                 self._tiles.append(self._new_tile_config)
-                
+
                 # Optionally add background image (store image_name, not id)
                 background_image_name = user_input.get("background_image_name")
                 if background_image_name and background_image_name != "none":
                     self._tiles[-1]["background_image_name"] = background_image_name
                     _LOGGER.info(f"Added background image '{background_image_name}' to tile")
-                
+
                 _LOGGER.info(f"Tile created at screen {self._new_screen}/position {self._new_tile_config[CONF_TILE]}")
                 new_options = dict(self._entry.options)
                 new_options[CONF_TILES] = self._tiles
                 new_options[CONF_SCREEN_NAMES] = self._screen_names
                 return self.async_create_entry(title="", data=new_options)
-            
-            # Get background image options from the shared library - every
-            # image added on ANY panel is available here, not just this one.
-            library = self._get_library()
-            background_images = []
-            if library:
-                background_images = [
-                    {"value": img["name"], "label": img["name"]}
-                    for img in library.list_images()
-                ]
-            
+
+            background_images = self._background_image_choices()
+
             # Add "None" option to skip background image
             image_options = [{"value": "none", "label": "No background image"}]
             image_options.extend(background_images)
-            
+
             schema = vol.Schema(
                 {
                     vol.Optional("background_image_name", default="none"): selector.SelectSelector(
@@ -864,7 +981,7 @@ class OxrsOptionsFlow(OptionsFlow):
                     ),
                 }
             )
-            
+
             _LOGGER.debug("Showing background image selection form")
             return self.async_show_form(
                 step_id="add_tile_background",
@@ -876,6 +993,163 @@ class OxrsOptionsFlow(OptionsFlow):
             )
         except Exception as err:
             _LOGGER.error(f"Error in async_step_add_tile_background: {err}", exc_info=True)
+            return self.async_abort(reason="invalid_details")
+
+    # ── editing a tile ─────────────────────────────────────────────────────
+    # Choose the tile, change its details, (playlists tiles) its playlists, then
+    # its background image. The screen and the tile type stay fixed - they are
+    # what the tile IS, and everything else about it hangs off them - so changing
+    # either means removing the tile and adding a new one.
+
+    @staticmethod
+    def _tile_choice_label(tile: dict[str, Any]) -> str:
+        return (
+            f"S{tile[CONF_SCREEN]}·T{tile[CONF_TILE]} "
+            f"[{tile.get(CONF_TYPE, '')}] "
+            f"{tile.get(CONF_LABEL) or ''} ({tile.get(CONF_ENTITY_ID, 'N/A')})"
+        )
+
+    async def async_step_edit_tile(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Choose the tile to edit."""
+        # Only tiles of a known type can be edited: the edit form is built from
+        # the type's definition.
+        editable = [
+            (index, tile)
+            for index, tile in enumerate(self._tiles)
+            if tile.get(CONF_TYPE) in TILE_TYPES
+        ]
+        if not editable:
+            return self.async_abort(reason="no_editable_tiles")
+
+        if user_input is not None:
+            self._edit_index = int(user_input["index"])
+            tile = self._tiles[self._edit_index]
+            # Work on a copy: nothing is saved until the last step.
+            self._new_tile_config = dict(tile)
+            self._new_type = tile[CONF_TYPE]
+            self._new_screen = tile[CONF_SCREEN]
+            self._playlist_choices = None
+            return await self.async_step_edit_tile_details()
+
+        schema = vol.Schema(
+            {
+                vol.Required("index"): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            {"value": str(index), "label": self._tile_choice_label(tile)}
+                            for index, tile in editable
+                        ],
+                        mode=selector.SelectSelectorMode.LIST,
+                    )
+                )
+            }
+        )
+        return self.async_show_form(step_id="edit_tile", data_schema=schema)
+
+    async def async_step_edit_tile_details(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Change the tile's position, entity, label, icon and extras."""
+        try:
+            assert self._new_tile_config is not None and self._new_type is not None
+            definition = TILE_TYPES[self._new_type]
+            draft = self._new_tile_config
+
+            max_positions = DEFAULT_LAYOUT["horizontal"] * DEFAULT_LAYOUT["vertical"]
+            # Positions held by OTHER tiles on the screen; the tile's own is free.
+            used = {
+                t[CONF_TILE]
+                for index, t in enumerate(self._tiles)
+                if index != self._edit_index and t[CONF_SCREEN] == self._new_screen
+            }
+            free = [i for i in range(1, max_positions + 1) if i not in used]
+
+            if user_input is not None:
+                draft[CONF_TILE] = int(user_input[CONF_TILE])
+                draft[CONF_ENTITY_ID] = user_input[CONF_ENTITY_ID]
+                draft[CONF_LABEL] = user_input.get(CONF_LABEL, "")
+                draft[CONF_ICON] = user_input.get(CONF_ICON, definition["icon"])
+                self._apply_details_input(draft, self._new_type, user_input)
+                if self._new_type == "playlists":
+                    return await self.async_step_edit_tile_playlists()
+                return await self.async_step_edit_tile_background()
+
+            return self.async_show_form(
+                step_id="edit_tile_details",
+                data_schema=self._tile_details_schema(self._new_type, free, current=draft),
+                description_placeholders={
+                    "type": definition["label"],
+                    "screen": str(self._new_screen),
+                },
+            )
+        except Exception as err:
+            _LOGGER.error(f"Error in async_step_edit_tile_details: {err}", exc_info=True)
+            return self.async_abort(reason="invalid_details")
+
+    async def async_step_edit_tile_playlists(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Playlists tiles only: change which playlists the tile lists."""
+        assert self._new_tile_config is not None
+        return await self._async_playlist_step(
+            step_id="edit_tile_playlists",
+            user_input=user_input,
+            next_step=self.async_step_edit_tile_background,
+            preselect=[p["uri"] for p in self._new_tile_config.get(CONF_PLAYLISTS, [])],
+            keep_on_failure=True,
+        )
+
+    async def async_step_edit_tile_background(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Change the tile's background image, then save the edited tile."""
+        try:
+            assert self._new_tile_config is not None
+            draft = self._new_tile_config
+
+            if user_input is not None:
+                name = user_input.get("background_image_name")
+                if name and name != "none":
+                    draft["background_image_name"] = name
+                else:
+                    draft.pop("background_image_name", None)
+                self._tiles[self._edit_index] = draft
+                _LOGGER.info(
+                    f"Tile edited at screen {draft[CONF_SCREEN]}/position {draft[CONF_TILE]}"
+                )
+                new_options = dict(self._entry.options)
+                new_options[CONF_TILES] = self._tiles
+                return self.async_create_entry(title="", data=new_options)
+
+            images = self._background_image_choices()
+            image_options = [{"value": "none", "label": "No background image"}, *images]
+            # An image deleted from the library while a tile still names it is no
+            # longer an option, and a default outside the options fails the form's
+            # own validation. Falling back to none also drops the dead reference.
+            current = draft.get("background_image_name")
+            default = current if current in {o["value"] for o in images} else "none"
+            schema = vol.Schema(
+                {
+                    vol.Optional("background_image_name", default=default): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=image_options,
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                }
+            )
+            return self.async_show_form(
+                step_id="edit_tile_background",
+                data_schema=schema,
+                description_placeholders={
+                    "tile": f"Screen {draft[CONF_SCREEN]}, Position {draft[CONF_TILE]}",
+                    "images_available": f"{len(images)} image(s) available",
+                },
+            )
+        except Exception as err:
+            _LOGGER.error(f"Error in async_step_edit_tile_background: {err}", exc_info=True)
             return self.async_abort(reason="invalid_details")
 
     def _build_add_tile_actions_schema(self, free: list[int]) -> vol.Schema:
@@ -947,11 +1221,7 @@ class OxrsOptionsFlow(OptionsFlow):
         options = [
             {
                 "value": str(index),
-                "label": (
-                    f"S{tile[CONF_SCREEN]}·T{tile[CONF_TILE]} "
-                    f"[{tile.get(CONF_TYPE, '')}] "
-                    f"{tile.get(CONF_LABEL) or ''} ({tile.get(CONF_ENTITY_ID, 'N/A')})"
-                ),
+                "label": self._tile_choice_label(tile),
             }
             for index, tile in enumerate(self._tiles)
         ]

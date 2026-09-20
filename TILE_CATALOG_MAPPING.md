@@ -137,6 +137,40 @@ key, default and limits, and both the form and the hub read from it.
 - Stored values are clamped to the firmware's limits before sending, so an old
   or hand-edited option can never push something the panel would reject.
 
+### A.6 Editing a tile
+
+The options menu's **Edit a tile** changes an existing tile in place, in four steps:
+choose the tile, its details, (playlists tiles only) its playlists, then its
+background image. Nothing is saved until the last step, so closing the dialog
+part-way changes nothing.
+
+| Editable | Not editable |
+| :--- | :--- |
+| position (within the screen), entity, label, icon, sub-label source, background colour, background image; album art (transport); secondary sensor (indicator); playlists (playlists) | the screen and the tile type |
+
+The screen and type are what the tile *is* - the form, the entity filter and the
+icon suggestions all hang off the type - so changing either means removing the
+tile and adding a new one. Tiles without a known type (the unused
+flexible-actions format) are not offered.
+
+- **One form builder.** Adding and editing share `_tile_details_schema`, so the two
+  forms cannot drift. The add form was checked field-for-field against its
+  pre-refactor output for all 15 tile types and is identical.
+- **Optional fields can be cleared.** A sub-label source or secondary sensor is
+  pre-filled with `suggested_value`, not a default, so emptying the field removes
+  it; album art is a boolean, and a black colour removes the tile's own colour.
+- **The current entity and icon always stay selectable.** HA validates a submitted
+  entity against `include_entities`, which drops anything unavailable, and a
+  `SelectSelector` rejects a value outside its options. A tile whose entity is
+  momentarily unavailable, or whose icon was deleted from the library, would
+  otherwise give a form that cannot be submitted.
+- **Playlists.** Pre-ticked with the tile's current playlists (those still in
+  Music Assistant). If Music Assistant can't be reached the step is skipped and
+  the tile keeps its playlists, so a label can still be changed while it is down.
+  Adding a tile aborts in that case, having nothing to fall back on.
+- **A background image deleted from the library** shows as "none" when editing, and
+  saving drops the dead reference.
+
 ### A.4 Icons
 
 The 65 icons generated for this catalog ship inside the integration as
