@@ -47,6 +47,7 @@ _LOGGER = logging.getLogger(__name__)
 
 # Never pull a huge original just to crush it to 140px.
 _MAX_SOURCE_BYTES = 4 * 1024 * 1024
+_READ_CHUNK = 64 * 1024
 _FETCH_TIMEOUT = 15
 
 
@@ -183,7 +184,19 @@ async def async_fetch_art(hass: HomeAssistant, url: str) -> bytes | None:
             if length is not None and length > _MAX_SOURCE_BYTES:
                 _LOGGER.debug(f"Artwork at {url} too large to fetch ({length} B)")
                 return None
-            return await resp.content.read(_MAX_SOURCE_BYTES + 1)
+            # Read to the end of the stream in chunks. Do NOT use
+            # resp.content.read(n): for n > 0 aiohttp returns whatever is
+            # buffered so far, up to n bytes, not the whole body, so any cover
+            # that arrives in more than one chunk came back truncated and
+            # Pillow refused it. The cap is enforced here as the data arrives,
+            # because a response with no Content-Length gives nothing to trust.
+            body = bytearray()
+            async for chunk in resp.content.iter_chunked(_READ_CHUNK):
+                body += chunk
+                if len(body) > _MAX_SOURCE_BYTES:
+                    _LOGGER.debug(f"Artwork at {url} exceeded {_MAX_SOURCE_BYTES} B")
+                    return None
+            return bytes(body)
     except asyncio.TimeoutError:
         _LOGGER.debug(f"Artwork fetch timed out for {url}")
         return None
