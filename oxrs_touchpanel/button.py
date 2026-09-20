@@ -1,8 +1,8 @@
-"""Button: re-push the panel configuration on demand."""
+"""Buttons: re-push the panel configuration, and reboot the panel, on demand."""
 
 from __future__ import annotations
 
-from homeassistant.components.button import ButtonEntity
+from homeassistant.components.button import ButtonDeviceClass, ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
@@ -17,9 +17,9 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up the push-config button."""
+    """Set up the push-config and reboot buttons."""
     panel: OxrsPanel = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([OxrsPushConfigButton(panel)])
+    async_add_entities([OxrsPushConfigButton(panel), OxrsRebootButton(panel)])
 
 
 class OxrsPushConfigButton(ButtonEntity):
@@ -38,3 +38,22 @@ class OxrsPushConfigButton(ButtonEntity):
     async def async_press(self) -> None:
         """Push the configuration to the panel."""
         await self._panel.async_push_config()
+
+
+class OxrsRebootButton(ButtonEntity):
+    """Reboots the panel."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Reboot"
+    _attr_device_class = ButtonDeviceClass.RESTART
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, panel: OxrsPanel) -> None:
+        """Initialise the button."""
+        self._panel = panel
+        self._attr_unique_id = f"{panel.client_id}_reboot"
+        self._attr_device_info = panel.device_info
+
+    async def async_press(self) -> None:
+        """Ask the panel to restart."""
+        await self._panel.async_restart()

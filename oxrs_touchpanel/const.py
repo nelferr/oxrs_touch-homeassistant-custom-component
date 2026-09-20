@@ -183,6 +183,11 @@ def topic_lwt(client_id: str) -> str:
     return f"stat/{client_id}/lwt"
 
 
+def topic_adopt(client_id: str) -> str:
+    """Adopt topic for a panel - RETAINED, and what makes HA offer it for setup."""
+    return f"stat/{client_id}/adopt"
+
+
 def topic_tele(client_id: str) -> str:
     """Telemetry topic for a panel (climate readings)."""
     return f"tele/{client_id}"

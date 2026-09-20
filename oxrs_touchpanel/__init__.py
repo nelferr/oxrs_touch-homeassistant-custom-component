@@ -19,9 +19,16 @@ import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import CONF_BACKGROUND_IMAGES, DOMAIN, LIBRARY_DATA_KEY, PLATFORMS
+from .const import (
+    CONF_BACKGROUND_IMAGES,
+    CONF_CLIENT_ID,
+    DOMAIN,
+    LIBRARY_DATA_KEY,
+    PLATFORMS,
+)
 from .hub import OxrsPanel
 from .library import SharedMediaLibrary
+from .retained import async_clear_retained
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -114,3 +121,30 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         panel: OxrsPanel = hass.data[DOMAIN].pop(entry.entry_id)
         await panel.async_unload()
     return unloaded
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Clear a removed panel's retained MQTT messages.
+
+    Its adopt message is what makes HA offer it for setup, and being retained it
+    is redelivered on every start - so a panel that is gone would be "discovered"
+    again even though nothing on the network is publishing it. See retained.py,
+    which leaves a panel alone if it is still online.
+
+    Runs after the entry has been unloaded. A failure here must never stop the
+    removal, so it is logged and swallowed.
+    """
+    client_id = entry.data.get(CONF_CLIENT_ID)
+    if not client_id:
+        return
+    try:
+        await async_clear_retained(hass, client_id)
+    except Exception as err:  # MQTT down, broker refused, ... - never block removal
+        _LOGGER.warning(
+            "Could not clear the retained MQTT messages for %s: %s. If it is "
+            "offered for setup again, publish an empty retained message to "
+            "stat/%s/adopt to remove it.",
+            client_id,
+            err,
+            client_id,
+        )
