@@ -90,6 +90,14 @@ PANEL_SETTINGS: dict[str, tuple[int, int, int]] = {
     "climateUpdateSeconds": (60, 0, 86400),
 }
 
+# Background colour of every screen and tile, stored in the entry options as
+# [r, g, b]. The firmware takes it as {"r", "g", "b"}, 0-255 each, applies it to
+# all screens and to every tile that has no colour of its own, and treats pure
+# black as "unset" - which resolves to its default, also black, so the two are
+# the same thing.
+CONF_BACKGROUND_COLOR = "background_color"
+DEFAULT_BACKGROUND_COLOR = (0, 0, 0)
+
 # A tile is 140px. If artwork cannot be squeezed into the budget even at two
 # colours, the encoder retries smaller rather than giving up outright.
 ALBUM_ART_SIZE = 140

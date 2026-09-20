@@ -149,14 +149,15 @@
       },
       "panel_settings": {
         "title": "Panel display settings",
-        "description": "The panel's own sleep, brightness and reporting settings, pre-filled with the firmware defaults and pushed to the panel each time it connects. A timeout of 0 disables that timeout, so a panel left on the defaults never turns its screen off.",
+        "description": "The panel's own sleep, brightness, reporting and colour settings, pre-filled with the firmware defaults and pushed to the panel each time it connects. A timeout of 0 disables that timeout, so a panel left on the defaults never turns its screen off.",
         "data": {
           "noActivitySecondsToSleep": "Screen Sleep Timeout (seconds)",
           "noActivitySecondsToHome": "Home Screen Timeout (seconds)",
           "noActivitySecondsToLock": "Lock Panel Timeout (seconds)",
           "tileBrightnessOn": "Tile Brightness ON state (%)",
           "tileBrightnessOff": "Tile Brightness OFF state (%)",
-          "climateUpdateSeconds": "Sensor Update Interval (seconds)"
+          "climateUpdateSeconds": "Sensor Update Interval (seconds)",
+          "background_color": "Background Color"
         },
         "data_description": {
           "noActivitySecondsToSleep": "Turn the screen backlight off after this long without a touch (0 disables, up to 3600). A touch wakes it.",
@@ -164,7 +165,8 @@
           "noActivitySecondsToLock": "Lock the panel behind its PIN keypad after this long without a touch (0 disables, up to 3600).",
           "tileBrightnessOn": "Brightness of tiles in their on state (75 to 100).",
           "tileBrightnessOff": "Brightness of tiles in their off state (0 to 25).",
-          "climateUpdateSeconds": "How often the panel reads and reports its temperature and humidity sensors (0 stops the reports, up to 86400)."
+          "climateUpdateSeconds": "How often the panel reads and reports its temperature and humidity sensors (0 stops the reports, up to 86400).",
+          "background_color": "Colour of every screen and tile background (default black). Tiles that have their own colour keep it."
         }
       }
     },
