@@ -85,10 +85,11 @@ hides the icon, empty restores it**. Follow the code, not the docs.
 
 ### A.5 Panel display settings
 
-The firmware has five panel-level settings that keep a screen from being left lit
-indefinitely. They are the same ones its admin page shows (the page renders the
+The firmware has six panel-level settings: five that keep a screen from being left lit
+indefinitely, and how often the panel reports its sensors. They are the same ones its admin page shows (the page renders the
 `configSchema` the device announces; none of them are in the page's own HTML),
-and they arrive on `conf/`. The options menu's **Panel display settings** step
+and they arrive on `conf/`. (`climateUpdateSeconds` is defined in the WT32 library, not
+`main.cpp`, and the device only lists it when it has an SHT20 or an S3 chip.) The options menu's **Panel display settings** step
 sets them; `PANEL_SETTINGS` in `const.py` is the one table holding the firmware
 key, default and limits, and both the form and the hub read from it.
 
@@ -99,6 +100,7 @@ key, default and limits, and both the form and the hub read from it.
 | `noActivitySecondsToLock` | 0 | 0–3600 | show the PIN keypad |
 | `tileBrightnessOn` | 100 | 75–100 % | tiles in their on state |
 | `tileBrightnessOff` | 10 | 0–25 % | tiles in their off state |
+| `climateUpdateSeconds` | 60 | 0–86400 | how often temperature/humidity are reported; 0 stops them |
 
 - **0 disables a timeout.** On the defaults the panel never sleeps, which is what
   leaves a static screen lit; the integration defaults to the firmware's values
@@ -107,7 +109,7 @@ key, default and limits, and both the form and the hub read from it.
   straight to 0. The `backlight` command on `cmnd/` (`brightness` 1–100, or
   `state` `sleep`/`awake`) and the tile brightness settings are the nearest
   things to dimming.
-- **All five are sent on every `conf/` push, defaults included,** because the
+- **All six are sent on every `conf/` push, defaults included,** because the
   panel keeps whatever it was last told. That also means a value set on the
   admin page is overwritten by this integration's value the next time the panel
   connects.

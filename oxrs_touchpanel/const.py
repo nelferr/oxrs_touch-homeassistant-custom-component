@@ -71,7 +71,8 @@ MAX_ALBUM_ART_BUDGET = 65536
 CONF_PANEL_SETTINGS = "panel_settings"
 
 # The firmware's own config keys, with the defaults and limits it documents
-# (main.cpp config schema; limits in globalDefines.h), as (default, min, max).
+# (main.cpp and the WT32 library's config schema; limits in globalDefines.h),
+# as (default, min, max).
 # Every one is sent on each conf/ push, defaults included, so the panel ends up
 # in a known state rather than in whatever the admin page last left it.
 #
@@ -84,6 +85,9 @@ PANEL_SETTINGS: dict[str, tuple[int, int, int]] = {
     "noActivitySecondsToLock": (0, 0, 3600),  # PIN keypad lock
     "tileBrightnessOn": (100, 75, 100),  # percent
     "tileBrightnessOff": (10, 0, 25),  # percent
+    # From the WT32 library rather than the panel firmware. Sets how often the
+    # panel reports its temperature and humidity; 0 stops the reports.
+    "climateUpdateSeconds": (60, 0, 86400),
 }
 
 # A tile is 140px. If artwork cannot be squeezed into the budget even at two
