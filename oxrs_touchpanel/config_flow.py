@@ -23,6 +23,7 @@ from homeassistant.helpers.service_info.mqtt import MqttServiceInfo
 
 _LOGGER = logging.getLogger(__name__)
 
+from .colors import BLACK, normalize_rgb
 from .const import (
     ALBUM_ART_SIZE,
     BUILTIN_ICONS,
@@ -32,12 +33,14 @@ from .const import (
     CONF_CLIENT_ID,
     CONF_ENTITY_ID,
     CONF_ICON,
+    CONF_ICON_ON_COLOR,
     CONF_INDICATOR_SECONDARY_ENTITY_ID,
     CONF_LABEL,
     CONF_NAME,
     CONF_PANEL_SETTINGS,
     CONF_PLAYLISTS,
     CONF_SCREEN,
+    CONF_SCREEN_COLORS,
     CONF_SCREEN_NAMES,
     CONF_SUBLABEL_ENTITY_ID,
     CONF_TILE,
@@ -45,6 +48,7 @@ from .const import (
     CONF_TYPE,
     DEFAULT_ALBUM_ART_BUDGET,
     DEFAULT_BACKGROUND_COLOR,
+    DEFAULT_ICON_ON_COLOR,
     DEFAULT_LAYOUT,
     DOMAIN,
     LIBRARY_DATA_KEY,
@@ -221,6 +225,8 @@ class OxrsOptionsFlow(OptionsFlow):
         )
         self._new_type: str | None = None
         self._new_screen: int = 1
+        # The screen whose name and colour are being edited.
+        self._edit_screen: int = 1
         self._new_tile_config: dict[str, Any] | None = None
         # Playlists fetched from Music Assistant for the tile being added, kept
         # so a validation error re-shows the form without fetching again.
@@ -335,10 +341,9 @@ class OxrsOptionsFlow(OptionsFlow):
             options[CONF_PANEL_SETTINGS] = {
                 key: int(user_input[key]) for key in PANEL_SETTINGS if key in user_input
             }
-            if CONF_BACKGROUND_COLOR in user_input:
-                options[CONF_BACKGROUND_COLOR] = [
-                    int(c) for c in user_input[CONF_BACKGROUND_COLOR]
-                ]
+            for key in (CONF_BACKGROUND_COLOR, CONF_ICON_ON_COLOR):
+                if key in user_input:
+                    options[key] = [int(c) for c in user_input[key]]
             return self.async_create_entry(title="", data=options)
 
         fields: dict[Any, Any] = {
@@ -357,15 +362,18 @@ class OxrsOptionsFlow(OptionsFlow):
             )
             for key, (default, low, high) in PANEL_SETTINGS.items()
         }
-        fields[
-            vol.Required(
-                CONF_BACKGROUND_COLOR,
-                default=list(
-                    self._entry.options.get(CONF_BACKGROUND_COLOR)
-                    or DEFAULT_BACKGROUND_COLOR
-                ),
-            )
-        ] = selector.ColorRGBSelector()
+        for key, default in (
+            (CONF_BACKGROUND_COLOR, DEFAULT_BACKGROUND_COLOR),
+            (CONF_ICON_ON_COLOR, DEFAULT_ICON_ON_COLOR),
+        ):
+            # normalize_rgb, not a bare list(): a hand-edited option that is not
+            # a colour would otherwise reach the picker and fail its validation.
+            fields[
+                vol.Required(
+                    key,
+                    default=list(normalize_rgb(self._entry.options.get(key)) or default),
+                )
+            ] = selector.ColorRGBSelector()
         return self.async_show_form(
             step_id="panel_settings", data_schema=vol.Schema(fields)
         )
@@ -479,20 +487,15 @@ class OxrsOptionsFlow(OptionsFlow):
     async def async_step_rename_screen(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Rename an existing screen without adding a tile."""
+        """Choose which screen to rename or recolour."""
         try:
             known_screens = sorted({t[CONF_SCREEN] for t in self._tiles})
             if not known_screens:
                 return self.async_abort(reason="no_screens")
 
             if user_input is not None:
-                screen = int(user_input["screen"])
-                new_name = user_input.get("screen_name", "").strip()
-                if new_name:
-                    self._screen_names[str(screen)] = new_name
-                new_options = dict(self._entry.options)
-                new_options[CONF_SCREEN_NAMES] = self._screen_names
-                return self.async_create_entry(title="", data=new_options)
+                self._edit_screen = int(user_input["screen"])
+                return await self.async_step_screen_appearance()
 
             screen_options = [
                 {
@@ -509,12 +512,63 @@ class OxrsOptionsFlow(OptionsFlow):
                             mode=selector.SelectSelectorMode.DROPDOWN,
                         )
                     ),
-                    vol.Optional("screen_name", default=""): selector.TextSelector(),
                 }
             )
             return self.async_show_form(step_id="rename_screen", data_schema=schema)
         except Exception as err:
             _LOGGER.error(f"Error in async_step_rename_screen: {err}", exc_info=True)
+            return self.async_abort(reason="invalid_format")
+
+    async def async_step_screen_appearance(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Set the chosen screen's name and background colour.
+
+        A separate step from choosing the screen, so both fields can show the
+        screen's CURRENT values. In one combined form the colour picker could
+        not know which screen was selected, and saving a rename would have
+        silently reset the colour to black.
+        """
+        try:
+            screen = self._edit_screen
+            key = str(screen)
+            colors = dict(self._entry.options.get(CONF_SCREEN_COLORS) or {})
+
+            if user_input is not None:
+                new_name = user_input.get("screen_name", "").strip()
+                if new_name:
+                    self._screen_names[key] = new_name
+                new_color = normalize_rgb(user_input.get("screen_color"))
+                # Black is the firmware's "unset" - the screen then follows the
+                # panel-wide colour - so it is stored as no colour at all.
+                if new_color is not None and new_color != BLACK:
+                    colors[key] = list(new_color)
+                else:
+                    colors.pop(key, None)
+                new_options = dict(self._entry.options)
+                new_options[CONF_SCREEN_NAMES] = self._screen_names
+                new_options[CONF_SCREEN_COLORS] = colors
+                return self.async_create_entry(title="", data=new_options)
+
+            schema = vol.Schema(
+                {
+                    vol.Optional(
+                        "screen_name",
+                        default=self._screen_names.get(key, f"Screen {screen}"),
+                    ): selector.TextSelector(),
+                    vol.Required(
+                        "screen_color",
+                        default=list(normalize_rgb(colors.get(key)) or BLACK),
+                    ): selector.ColorRGBSelector(),
+                }
+            )
+            return self.async_show_form(
+                step_id="screen_appearance",
+                data_schema=schema,
+                description_placeholders={"screen": key},
+            )
+        except Exception as err:
+            _LOGGER.error(f"Error in async_step_screen_appearance: {err}", exc_info=True)
             return self.async_abort(reason="invalid_format")
 
     async def async_step_add_tile_type(
@@ -601,6 +655,10 @@ class OxrsOptionsFlow(OptionsFlow):
                 sublabel_entity_id = user_input.get(CONF_SUBLABEL_ENTITY_ID)
                 if sublabel_entity_id:
                     self._new_tile_config[CONF_SUBLABEL_ENTITY_ID] = sublabel_entity_id
+                # Black means "no colour of its own": the tile follows its screen.
+                tile_color = normalize_rgb(user_input.get(CONF_BACKGROUND_COLOR))
+                if tile_color is not None and tile_color != BLACK:
+                    self._new_tile_config[CONF_BACKGROUND_COLOR] = list(tile_color)
                 if self._new_type == "indicator":
                     secondary_entity_id = user_input.get(CONF_INDICATOR_SECONDARY_ENTITY_ID)
                     if secondary_entity_id:
@@ -666,6 +724,10 @@ class OxrsOptionsFlow(OptionsFlow):
                 vol.Optional(CONF_SUBLABEL_ENTITY_ID): selector.EntitySelector(
                     selector.EntitySelectorConfig()
                 ),
+                # Left on black, the tile follows its screen's colour.
+                vol.Required(
+                    CONF_BACKGROUND_COLOR, default=list(BLACK)
+                ): selector.ColorRGBSelector(),
             }
             if self._new_type == "transport":
                 # transport tile: optionally show the player's current cover as

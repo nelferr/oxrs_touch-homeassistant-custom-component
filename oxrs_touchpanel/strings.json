@@ -29,7 +29,7 @@
           "add_tile": "Add a tile",
           "remove_tile": "Remove a tile",
           "manage_background_images": "Manage background images",
-          "rename_screen": "Rename a screen",
+          "rename_screen": "Screen name and colour",
           "manage_custom_icons": "Manage custom icons",
           "panel_settings": "Panel display settings",
           "album_art_settings": "Album art settings"
@@ -57,7 +57,11 @@
           "icon": "Icon",
           "sublabel_entity_id": "Sub-label source (optional) - shows this entity's state under the tile",
           "indicator_secondary_entity_id": "Secondary sensor (optional, indicator tiles only) - shown alongside the primary value",
-          "album_art": "Show album art as the tile background (transport tiles only) - replaces the play/pause icon"
+          "album_art": "Show album art as the tile background (transport tiles only) - replaces the play/pause icon",
+          "background_color": "Tile background colour"
+        },
+        "data_description": {
+          "background_color": "Leave on black for no colour of its own - the tile then follows its screen's colour."
         }
       },
       "add_tile_playlists": {
@@ -95,11 +99,21 @@
         }
       },
       "rename_screen": {
-        "title": "Rename a screen",
-        "description": "Choose a screen and enter its new name.",
+        "title": "Screen name and colour",
+        "description": "Choose the screen to rename or recolour.",
         "data": {
-          "screen": "Screen",
-          "screen_name": "New name"
+          "screen": "Screen"
+        }
+      },
+      "screen_appearance": {
+        "title": "Screen {screen}: name and colour",
+        "description": "The name appears as the screen's label on the panel. Leave the colour on black to follow the panel-wide background colour.",
+        "data": {
+          "screen_name": "Name",
+          "screen_color": "Background colour"
+        },
+        "data_description": {
+          "screen_color": "Black means no colour of its own. Tiles on this screen follow it unless they have a colour of their own."
         }
       },
       "add_background_image": {
@@ -157,7 +171,8 @@
           "tileBrightnessOn": "Tile Brightness ON state (%)",
           "tileBrightnessOff": "Tile Brightness OFF state (%)",
           "climateUpdateSeconds": "Sensor Update Interval (seconds)",
-          "background_color": "Background Color"
+          "background_color": "Background Color",
+          "icon_on_color": "Icon colour when on"
         },
         "data_description": {
           "noActivitySecondsToSleep": "Turn the screen backlight off after this long without a touch (0 disables, up to 3600). A touch wakes it.",
@@ -166,7 +181,8 @@
           "tileBrightnessOn": "Brightness of tiles in their on state (75 to 100).",
           "tileBrightnessOff": "Brightness of tiles in their off state (0 to 25).",
           "climateUpdateSeconds": "How often the panel reads and reports its temperature and humidity sensors (0 stops the reports, up to 86400).",
-          "background_color": "Colour of every screen and tile background (default black). Tiles that have their own colour keep it."
+          "background_color": "Colour of every screen and tile background (default black). A screen or tile with its own colour keeps it.",
+          "icon_on_color": "Colour of icons on tiles that are on (default light green). Black is read by the firmware as unset and gives the default."
         }
       }
     },
