@@ -34,6 +34,7 @@ from .const import (
     CONF_INDICATOR_SECONDARY_ENTITY_ID,
     CONF_LABEL,
     CONF_NAME,
+    CONF_PANEL_SETTINGS,
     CONF_PLAYLISTS,
     CONF_SCREEN,
     CONF_SCREEN_NAMES,
@@ -48,6 +49,7 @@ from .const import (
     MAX_ALBUM_ART_BUDGET,
     MAX_PLAYLISTS,
     MIN_ALBUM_ART_BUDGET,
+    PANEL_SETTINGS,
 )
 from .library import (
     ICON_CATEGORIES,
@@ -309,9 +311,47 @@ class OxrsOptionsFlow(OptionsFlow):
                 "rename_screen",
                 "manage_background_images",
                 "manage_custom_icons",
+                "panel_settings",
                 "album_art_settings",
             ],
         )
+
+    async def async_step_panel_settings(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Set the panel's sleep, home and lock timeouts and tile brightness.
+
+        These are the firmware's own settings, the same ones its admin page
+        offers, and each is pre-filled with the firmware default. The form is
+        built from PANEL_SETTINGS so its limits are the ones the hub clamps to.
+        """
+        stored = self._entry.options.get(CONF_PANEL_SETTINGS) or {}
+        if user_input is not None:
+            options = dict(self._entry.options)
+            options[CONF_PANEL_SETTINGS] = {
+                key: int(user_input[key]) for key in PANEL_SETTINGS if key in user_input
+            }
+            return self.async_create_entry(title="", data=options)
+
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    key, default=stored.get(key, default)
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=low,
+                        max=high,
+                        step=1,
+                        mode="box",
+                        unit_of_measurement=(
+                            "%" if key.startswith("tileBrightness") else "seconds"
+                        ),
+                    )
+                )
+                for key, (default, low, high) in PANEL_SETTINGS.items()
+            }
+        )
+        return self.async_show_form(step_id="panel_settings", data_schema=schema)
 
     async def async_step_album_art_settings(
         self, user_input: dict[str, Any] | None = None

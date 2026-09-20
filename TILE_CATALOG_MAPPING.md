@@ -62,6 +62,8 @@ Panel-level, not per-tile:
 - `{"screen": {"load": N}}` on `cmnd/` — jump to a screen from HA
 - `{"screens": [{"screen": N, "footer": {"left": …, "center": …, "right": …}}]}` — the footer bar
 - `{"noActivitySecondsToLock": N}` on `conf/` — keypad-blocked screen lock
+- The rest of the panel's display settings also arrive on `conf/`; the integration now
+  sends all of them — see A.5
 
 **Caveat on `text`:** the OXRS docs contradict themselves (line 161 says empty
 string restores the icon, line 177 says it clears it). `hub.py` already
@@ -80,6 +82,37 @@ hides the icon, empty restores it**. Follow the code, not the docs.
 3. Nothing else. `hub.py` drives everything generically off the registry, and
    the config flow builds the type dropdown, the entity picker and the icon
    picker from it.
+
+### A.5 Panel display settings
+
+The firmware has five panel-level settings that keep a screen from being left lit
+indefinitely. They are the same ones its admin page shows (the page renders the
+`configSchema` the device announces; none of them are in the page's own HTML),
+and they arrive on `conf/`. The options menu's **Panel display settings** step
+sets them; `PANEL_SETTINGS` in `const.py` is the one table holding the firmware
+key, default and limits, and both the form and the hub read from it.
+
+| Key | Default | Range | Effect |
+| :--- | ---: | :--- | :--- |
+| `noActivitySecondsToSleep` | 0 | 0–3600 | backlight off; a touch wakes it |
+| `noActivitySecondsToHome` | 0 | 0–600 | close pop-ups, return to the home screen |
+| `noActivitySecondsToLock` | 0 | 0–3600 | show the PIN keypad |
+| `tileBrightnessOn` | 100 | 75–100 % | tiles in their on state |
+| `tileBrightnessOff` | 10 | 0–25 % | tiles in their off state |
+
+- **0 disables a timeout.** On the defaults the panel never sleeps, which is what
+  leaves a static screen lit; the integration defaults to the firmware's values
+  rather than choosing a sleep time for the user.
+- **There is no timed dim.** Sleep cuts the backlight from its current level
+  straight to 0. The `backlight` command on `cmnd/` (`brightness` 1–100, or
+  `state` `sleep`/`awake`) and the tile brightness settings are the nearest
+  things to dimming.
+- **All five are sent on every `conf/` push, defaults included,** because the
+  panel keeps whatever it was last told. That also means a value set on the
+  admin page is overwritten by this integration's value the next time the panel
+  connects.
+- Stored values are clamped to the firmware's limits before sending, so an old
+  or hand-edited option can never push something the panel would reject.
 
 ### A.4 Icons
 
