@@ -20,6 +20,7 @@ from .albumart import (
     art_source_url,
     async_build_art_payload,
 )
+from .boards import hardware_from_adopt, layout_from_data
 from .colors import BLACK, normalize_rgb, override_payload, rgb_payload
 from .const import (
     CONF_ACTION_ENTITY,
@@ -29,6 +30,7 @@ from .const import (
     CONF_ALBUM_ART_BUDGET,
     CONF_BACKGROUND_COLOR,
     CONF_ENTITY_ID,
+    CONF_HARDWARE,
     CONF_ICON,
     CONF_ICON_ON_COLOR,
     CONF_INDICATOR_SECONDARY_ENTITY_ID,
@@ -44,13 +46,13 @@ from .const import (
     DEFAULT_ALBUM_ART_BUDGET,
     DEFAULT_BACKGROUND_COLOR,
     DEFAULT_ICON_ON_COLOR,
-    DEFAULT_LAYOUT,
     DOMAIN,
     MANUFACTURER,
     MODEL,
     PANEL_SETTINGS,
     signal_available,
     signal_tele,
+    topic_adopt,
     topic_cmnd,
     topic_conf,
     topic_lwt,
@@ -214,6 +216,8 @@ class OxrsPanel:
         # reset when the panel reconnects, since it keeps no images across a
         # restart. Membership doubles as "this name is safe to reference".
         self._album_art: dict[str, str] = {}
+        # The stored board only warns once if the panel later reports another.
+        self._warned_hardware = False
 
     @property
     def tiles(self) -> list[dict[str, Any]]:
@@ -336,6 +340,20 @@ class OxrsPanel:
         return first_upload or force
 
     @property
+    def hardware(self) -> str | None:
+        """The board this panel reported when it was added, if it did."""
+        return self.entry.data.get(CONF_HARDWARE)
+
+    @property
+    def layout(self) -> dict[str, int]:
+        """The tile grid this panel was given when it was added.
+
+        Panels added before this existed have none stored and keep the 3x3 the
+        integration always sent.
+        """
+        return layout_from_data(self.entry.data)
+
+    @property
     def device_info(self) -> DeviceInfo:
         """Device registry entry for this panel."""
         return DeviceInfo(
@@ -343,6 +361,7 @@ class OxrsPanel:
             name=self.entry.title,
             manufacturer=MANUFACTURER,
             model=MODEL,
+            hw_version=self.hardware,
         )
 
     async def async_setup(self) -> None:
@@ -360,6 +379,11 @@ class OxrsPanel:
         self._unsubs.append(
             await mqtt.async_subscribe(
                 self.hass, topic_tele(self.client_id), self._on_tele
+            )
+        )
+        self._unsubs.append(
+            await mqtt.async_subscribe(
+                self.hass, topic_adopt(self.client_id), self._on_adopt
             )
         )
         self._track_entities()
@@ -519,7 +543,7 @@ class OxrsPanel:
             screen_conf: dict[str, Any] = {
                 "screen": screen_idx,
                 "label": screen_names.get(str(screen_idx), self.entry.title),
-                "screenLayout": DEFAULT_LAYOUT,
+                "screenLayout": self.layout,
                 "tiles": tiles_conf,
             }
             # A screen's own colour; without one it inherits the panel's.
@@ -971,6 +995,27 @@ class OxrsPanel:
         # (Re)configure whenever the panel (re)connects.
         if online and not was_available:
             self.hass.async_create_task(self.async_push_config())
+
+    @callback
+    def _on_adopt(self, msg: mqtt.ReceiveMessage) -> None:
+        """Warn if the panel now reports a different board than it was added as.
+
+        Only a warning: the grid was fixed when the panel was added, and changing
+        it under existing tiles would move every one of them.
+        """
+        reported = hardware_from_adopt(msg.payload)
+        if self._warned_hardware or not reported or not self.hardware:
+            return
+        if reported != self.hardware:
+            self._warned_hardware = True
+            _LOGGER.warning(
+                "%s was added as a %s but now reports %s. Its tile grid was fixed "
+                "when it was added and has not changed; remove and re-add the panel "
+                "to use the new board's grid.",
+                self.client_id,
+                self.hardware,
+                reported,
+            )
 
     @callback
     def _on_tele(self, msg: mqtt.ReceiveMessage) -> None:

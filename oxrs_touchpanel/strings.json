@@ -7,12 +7,16 @@
         "description": "Enter the panel's MQTT client id (shown on the panel's Settings screen).",
         "data": {
           "client_id": "MQTT client id",
-          "name": "Name (optional)"
+          "name": "Name (optional)",
+          "hardware": "Panel board"
+        },
+        "data_description": {
+          "hardware": "Sets how many tiles each screen has. Pick the board named on the panel; if yours is not listed, keep the default."
         }
       },
       "confirm": {
         "title": "OXRS Touch Panel discovered",
-        "description": "Do you want to add the panel \"{name}\"?"
+        "description": "Do you want to add the panel \"{name}\"?\n\nBoard: {board}"
       }
     },
     "abort": {

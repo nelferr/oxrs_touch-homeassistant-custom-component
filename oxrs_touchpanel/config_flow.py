@@ -23,6 +23,15 @@ from homeassistant.helpers.service_info.mqtt import MqttServiceInfo
 
 _LOGGER = logging.getLogger(__name__)
 
+from .boards import (
+    BOARDS,
+    OTHER_BOARD,
+    board_label,
+    describe,
+    hardware_from_adopt,
+    layout_from_data,
+    new_entry_data,
+)
 from .colors import BLACK, normalize_rgb
 from .const import (
     ALBUM_ART_SIZE,
@@ -32,6 +41,7 @@ from .const import (
     CONF_BACKGROUND_COLOR,
     CONF_CLIENT_ID,
     CONF_ENTITY_ID,
+    CONF_HARDWARE,
     CONF_ICON,
     CONF_ICON_ON_COLOR,
     CONF_INDICATOR_SECONDARY_ENTITY_ID,
@@ -49,7 +59,6 @@ from .const import (
     DEFAULT_ALBUM_ART_BUDGET,
     DEFAULT_BACKGROUND_COLOR,
     DEFAULT_ICON_ON_COLOR,
-    DEFAULT_LAYOUT,
     DOMAIN,
     LIBRARY_DATA_KEY,
     MAX_ALBUM_ART_BUDGET,
@@ -148,6 +157,7 @@ class OxrsConfigFlow(ConfigFlow, domain=DOMAIN):
     def __init__(self) -> None:
         """Initialise the flow."""
         self._client_id: str | None = None
+        self._hardware: str | None = None
 
     async def async_step_mqtt(
         self, discovery_info: MqttServiceInfo
@@ -164,6 +174,8 @@ class OxrsConfigFlow(ConfigFlow, domain=DOMAIN):
         self._abort_if_unique_id_configured()
 
         self._client_id = client_id
+        # The adopt message names the board, which decides the panel's tile grid.
+        self._hardware = hardware_from_adopt(discovery_info.payload)
         self.context["title_placeholders"] = {"name": client_id}
         return await self.async_step_confirm()
 
@@ -174,11 +186,14 @@ class OxrsConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             return self.async_create_entry(
                 title=self._client_id,
-                data={CONF_CLIENT_ID: self._client_id},
+                data=new_entry_data(self._client_id, self._hardware),
             )
         return self.async_show_form(
             step_id="confirm",
-            description_placeholders={"name": self._client_id},
+            description_placeholders={
+                "name": self._client_id,
+                "board": describe(self._hardware),
+            },
         )
 
     async def async_step_user(
@@ -190,14 +205,31 @@ class OxrsConfigFlow(ConfigFlow, domain=DOMAIN):
             client_id = user_input[CONF_CLIENT_ID].strip()
             await self.async_set_unique_id(client_id)
             self._abort_if_unique_id_configured()
+            hardware = user_input.get(CONF_HARDWARE)
             return self.async_create_entry(
                 title=user_input.get(CONF_NAME) or client_id,
-                data={CONF_CLIENT_ID: client_id},
+                data=new_entry_data(
+                    client_id, None if hardware in (None, OTHER_BOARD) else hardware
+                ),
             )
+        # Added by hand there is no discovery message to read the board from, so
+        # ask. The board sets how many tiles each screen has.
         schema = vol.Schema(
             {
                 vol.Required(CONF_CLIENT_ID): str,
                 vol.Optional(CONF_NAME): str,
+                vol.Required(CONF_HARDWARE, default=OTHER_BOARD): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            *(
+                                {"value": hw, "label": board_label(board)}
+                                for hw, board in BOARDS.items()
+                            ),
+                            {"value": OTHER_BOARD, "label": "Other or not listed (3 × 3 tiles)"},
+                        ],
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
             }
         )
         return self.async_show_form(
@@ -235,6 +267,11 @@ class OxrsOptionsFlow(OptionsFlow):
         # Playlists fetched from Music Assistant for the tile being added, kept
         # so a validation error re-shows the form without fetching again.
         self._playlist_choices: list[dict[str, str]] | None = None
+
+    def _grid_positions(self) -> int:
+        """How many tile positions each screen of THIS panel has."""
+        layout = layout_from_data(self._entry.data)
+        return layout["horizontal"] * layout["vertical"]
 
     def _get_library(self) -> SharedMediaLibrary | None:
         """Return the shared media library, if the integration has finished
@@ -804,7 +841,7 @@ class OxrsOptionsFlow(OptionsFlow):
             definition = TILE_TYPES[self._new_type]
             _LOGGER.debug(f"Tile type definition: {self._new_type}")
 
-            max_positions = DEFAULT_LAYOUT["horizontal"] * DEFAULT_LAYOUT["vertical"]
+            max_positions = self._grid_positions()
             used = {
                 t[CONF_TILE] for t in self._tiles if t[CONF_SCREEN] == self._new_screen
             }
@@ -1057,7 +1094,7 @@ class OxrsOptionsFlow(OptionsFlow):
             definition = TILE_TYPES[self._new_type]
             draft = self._new_tile_config
 
-            max_positions = DEFAULT_LAYOUT["horizontal"] * DEFAULT_LAYOUT["vertical"]
+            max_positions = self._grid_positions()
             # Positions held by OTHER tiles on the screen; the tile's own is free.
             used = {
                 t[CONF_TILE]
