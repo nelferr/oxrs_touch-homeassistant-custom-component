@@ -225,6 +225,34 @@ only `#if defined(FW_HARDWARE)`, so a custom build may omit it.
   hub logs a warning once and changes nothing.
 - The board is shown as the device's hardware version.
 
+### A.9 Tile sizes
+
+A tile can cover more than one cell. It is stored as `span: [w, h]` on the tile (absent for the
+ordinary 1 x 1) and sent as the firmware's `span: {"right": w, "down": h}` only when larger.
+
+- **Anchored at the top-left cell.** The tile's number is that cell's row-major position, so a 2 x 2
+  at position 1 covers 1, 2, 4 and 5 on a 3-wide grid. Touch events report the anchor position, so
+  nothing about event handling changes.
+- **The firmware clips an overflow but does not reject overlaps** - two tiles asked to cover the same
+  cell just stack. `grid.py` is therefore the only thing preventing one tile hiding another, and every
+  position and size the dialogs offer goes through it. A large tile blocks every cell it covers.
+- **A checkbox, not a step for everyone.** The details form has **Make this tile larger**. Ticked, the
+  next step lists the sizes that fit at the chosen position (a form cannot change one field's options
+  from another, and an extra step for every tile added would tax the common case). If nothing larger
+  fits, the form comes back with an error rather than silently doing nothing.
+- **Sizes offered:** every rectangle that fits, the common ones (2 x 1, 1 x 2, 2 x 2) first, the rest by
+  area, and **Full screen** (the whole grid) last. Full screen appears only when the screen is otherwise
+  empty, which is a consequence of the fit rule rather than a special case; the size step says so when
+  it is missing. It is never auto-cleared.
+- **Editing:** the checkbox starts ticked for a tile that is already large; unticking returns it to one
+  cell. Moving a large tile to a place where its size does not fit says so and picks a smaller one
+  instead of shrinking it silently. The tile chooser shows a tile's size (`S1·T1 2x2 [transport] ...`).
+- **Experimental styles.** Only `button`, `indicator` and `buttonPrevNext` tiles are known to draw
+  sensibly when larger. Sliders, dropdowns, thermostats and the rest still work but their sizes are
+  labelled experimental until someone has looked at them on hardware.
+- **Not solved by sizing:** the firmware draws icons and text at a fixed size, so a big tile is a bigger
+  target and a bigger background image, not bigger controls. Album art scaling is a separate step.
+
 ### A.4 Icons
 
 The 65 icons generated for this catalog ship inside the integration as
