@@ -56,7 +56,7 @@ new firmware support. Sent on `cmnd/` unless noted.
 | `backgroundColorRgb` | `{r,g,b}` per-tile background |
 | `backgroundImage` | `{"name": …}`, after an `addImage` — see `library.py` |
 | `tag` | Arbitrary string echoed back in the tile's `stat/` event |
-| `right` / `left` (conf) | Grid-cell spanning for wider tiles |
+| `span` `{right, down}` (conf) | Cells a tile covers, anchored at its top-left cell. The firmware clips an overflow but does NOT reject overlaps (tiles just stack) |
 
 Panel-level, not per-tile:
 - `{"screen": {"load": N}}` on `cmnd/` — jump to a screen from HA
@@ -197,6 +197,33 @@ deletes both, by publishing an empty retained payload to each.
 - **Only removal triggers it.** Ghosts that were *discovered but never added* have no entry to
   remove, so this cannot reach them: use Ignore, or publish an empty retained message to
   their `stat/<id>/adopt` (HA's MQTT "Publish a packet" has a Retain switch).
+
+### A.8 Board detection and the tile grid
+
+A panel's adopt message (`stat/<id>/adopt`, retained) carries `firmware.hardware`, set from the
+firmware's `FW_HARDWARE` build flag. Every build environment defines it, but the firmware emits it
+only `#if defined(FW_HARDWARE)`, so a custom build may omit it.
+
+| `hardware` | Screen | Native grid |
+| :--- | :--- | :--- |
+| `WT32S3-86S`, `WT32S3-86V` | 480 x 480 | 3 x 3 |
+| `WT32-SC01`, `WT32-SC01-PLUS` | 320 x 480 | 2 x 3 (2 columns, 3 rows) |
+
+(From the firmware's own defaults in `globalDefines.h` and `platformio.ini`; the SC01 family sets no
+`SCREEN_*` flags and so takes the defaults.) `boards.py` holds the table.
+
+- **New panels only.** The grid is decided once, when a panel is added, and stored in its config
+  entry (`layout`, plus `hardware`). Discovery reads the board from the adopt message; adding by
+  hand asks for it from a short list, defaulting to "other" (3 x 3). An unknown or missing board is 3 x 3.
+- **Existing panels are never offered it.** An entry with no stored `layout` keeps the 3 x 3 the
+  integration always sent. The reason is that **tile numbers are row-major, so they depend on the
+  column count**: position 4 is row 2 column 1 on three columns but row 2 column 2 on two. Changing a
+  grid under existing tiles would move every one of them and push some off the panel, so there is no
+  conversion step and none is needed. The way onto the native grid is to remove and re-add the panel,
+  which loses its tiles.
+- **A warning, not a change.** If a panel later reports a different board than it was added as, the
+  hub logs a warning once and changes nothing.
+- The board is shown as the device's hardware version.
 
 ### A.4 Icons
 

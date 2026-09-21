@@ -132,6 +132,13 @@ CONF_BACKGROUND_IMAGES = "background_images"
 # Panel defaults (WT32S3-86V/86S are 3x3; smaller panels default to 2x3)
 DEFAULT_LAYOUT = {"horizontal": 3, "vertical": 3}
 
+# Set once, when a panel is ADDED (see boards.py): the board it reported and the
+# tile grid that goes with it. A config entry with no CONF_LAYOUT predates this and
+# keeps DEFAULT_LAYOUT for good - changing a grid under existing tiles would move
+# every one of them, because tile numbers are row-major.
+CONF_HARDWARE = "hardware"
+CONF_LAYOUT = "layout"
+
 # CCT firmware ranges (verified from classColorPicker.cpp)
 KELVIN_MIN = 2000
 KELVIN_MAX = 6000
