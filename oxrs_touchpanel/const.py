@@ -66,6 +66,31 @@ DEFAULT_ALBUM_ART_BUDGET = 12000
 MIN_ALBUM_ART_BUDGET = 2048
 MAX_ALBUM_ART_BUDGET = 65536
 
+# Album art on a tile larger than one cell. The firmware enlarges a background image
+# by a zoom of 50-200 %, so the image uploaded is small and the panel does the
+# enlarging: its size stays bounded however big the tile is.
+#
+# ZOOM is how much the panel enlarges it (only ever an enlargement: 100-200). Higher
+# means a smaller image is uploaded and it looks blockier.
+#
+# MAX_SOURCE is the longest edge of the image uploaded, and it is the safety limit: a
+# panel sent an image it cannot hold in memory may crash, and album art is re-sent on
+# every reconnect, so it would crash again each time. The default is about the size of
+# the 140 px covers that already work.
+#
+# TEXT draws the title and artist into the picture on tiles at least 2 x 2, because
+# the firmware's own text is a small fixed size however big the tile is.
+CONF_ALBUM_ART_ZOOM = "album_art_zoom"
+DEFAULT_ALBUM_ART_ZOOM = 200
+MIN_ALBUM_ART_ZOOM = 100
+MAX_ALBUM_ART_ZOOM = 200
+CONF_ALBUM_ART_MAX_SOURCE = "album_art_max_source"
+DEFAULT_ALBUM_ART_MAX_SOURCE = 150
+MIN_ALBUM_ART_MAX_SOURCE = 60
+MAX_ALBUM_ART_MAX_SOURCE = 460
+CONF_ALBUM_ART_TEXT = "album_art_text"
+DEFAULT_ALBUM_ART_TEXT = True
+
 # Panel-level display settings, stored in the entry options under this key as
 # {firmware_key: int}. Anything missing falls back to the default below.
 CONF_PANEL_SETTINGS = "panel_settings"
