@@ -21,6 +21,7 @@ from .albumart import (
     async_build_art_payload,
 )
 from .boards import hardware_from_adopt, layout_from_data
+from .grid import span_payload
 from .colors import BLACK, normalize_rgb, override_payload, rgb_payload
 from .const import (
     CONF_ACTION_ENTITY,
@@ -39,6 +40,7 @@ from .const import (
     CONF_SCREEN,
     CONF_SCREEN_COLORS,
     CONF_SCREEN_NAMES,
+    CONF_SPAN,
     CONF_SUBLABEL_ENTITY_ID,
     CONF_TILE,
     CONF_TILES,
@@ -471,6 +473,8 @@ class OxrsPanel:
             "iconOnColorRgb": self.icon_on_color,
             "screens": [],
         }
+        layout = self.layout
+        cols, rows = layout["horizontal"], layout["vertical"]
         for screen_idx, screen_tiles in sorted(screens.items()):
             tiles_conf: list[dict[str, Any]] = []
             for t in sorted(screen_tiles, key=lambda x: x[CONF_TILE]):
@@ -536,6 +540,12 @@ class OxrsPanel:
                 tile_color = override_payload(t.get(CONF_BACKGROUND_COLOR))
                 if tile_color is not None:
                     tile_conf["backgroundColorRgb"] = tile_color
+
+                # A tile larger than one cell. Clipped to the grid as the firmware
+                # would, so what is sent is what is drawn.
+                tile_span = span_payload(t[CONF_TILE], t.get(CONF_SPAN), cols, rows)
+                if tile_span is not None:
+                    tile_conf["span"] = tile_span
 
                 tiles_conf.append(tile_conf)
             

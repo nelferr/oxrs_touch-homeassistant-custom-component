@@ -33,6 +33,17 @@ from .boards import (
     new_entry_data,
 )
 from .colors import BLACK, normalize_rgb
+from .grid import (
+    ONE,
+    free_anchors,
+    is_size_tested,
+    larger_sizes,
+    occupied,
+    parse_size_value,
+    size_label,
+    size_value,
+    tile_span,
+)
 from .const import (
     ALBUM_ART_SIZE,
     BUILTIN_ICONS,
@@ -52,6 +63,7 @@ from .const import (
     CONF_SCREEN,
     CONF_SCREEN_COLORS,
     CONF_SCREEN_NAMES,
+    CONF_SPAN,
     CONF_SUBLABEL_ENTITY_ID,
     CONF_TILE,
     CONF_TILES,
@@ -60,6 +72,7 @@ from .const import (
     DEFAULT_BACKGROUND_COLOR,
     DEFAULT_ICON_ON_COLOR,
     DOMAIN,
+    FIELD_LARGER,
     LIBRARY_DATA_KEY,
     MAX_ALBUM_ART_BUDGET,
     MAX_PLAYLISTS,
@@ -268,10 +281,18 @@ class OxrsOptionsFlow(OptionsFlow):
         # so a validation error re-shows the form without fetching again.
         self._playlist_choices: list[dict[str, str]] | None = None
 
-    def _grid_positions(self) -> int:
-        """How many tile positions each screen of THIS panel has."""
+    def _grid(self) -> tuple[int, int]:
+        """(columns, rows) of THIS panel's screens."""
         layout = layout_from_data(self._entry.data)
-        return layout["horizontal"] * layout["vertical"]
+        return layout["horizontal"], layout["vertical"]
+
+    def _occupied(self, screen: int, skip: int | None = None) -> set[int]:
+        """Every position on a screen covered by a tile, at its full size.
+
+        skip is the index of the tile being edited, so it does not block itself.
+        """
+        cols, rows = self._grid()
+        return occupied(self._tiles, screen, cols, rows, skip=skip)
 
     def _get_library(self) -> SharedMediaLibrary | None:
         """Return the shared media library, if the integration has finished
@@ -697,6 +718,7 @@ class OxrsOptionsFlow(OptionsFlow):
         tile_type: str,
         free: list[int],
         current: dict[str, Any] | None = None,
+        larger: bool = False,
     ) -> vol.Schema:
         """The details form for a tile: position, entity, label, icon and extras.
 
@@ -803,6 +825,12 @@ class OxrsOptionsFlow(OptionsFlow):
                 default=list(normalize_rgb(current.get(CONF_BACKGROUND_COLOR)) or BLACK),
             )
         ] = selector.ColorRGBSelector()
+        # Ticking this leads to a step that lists the sizes that fit at the chosen
+        # position. It is a checkbox rather than a size field because the choices
+        # depend on the position, and a form cannot change one field's options
+        # from another - and an extra step for every tile added would be a tax
+        # on the common case.
+        schema_dict[vol.Optional(FIELD_LARGER, default=larger)] = selector.BooleanSelector()
         if tile_type == "transport":
             # transport tile: optionally show the player's current cover as the
             # tile background. The firmware needs non-empty text to hide an
@@ -841,11 +869,15 @@ class OxrsOptionsFlow(OptionsFlow):
             definition = TILE_TYPES[self._new_type]
             _LOGGER.debug(f"Tile type definition: {self._new_type}")
 
-            max_positions = self._grid_positions()
-            used = {
-                t[CONF_TILE] for t in self._tiles if t[CONF_SCREEN] == self._new_screen
+            cols, rows = self._grid()
+            # Cells covered by tiles already here, each at its FULL size: a large
+            # tile blocks every cell it covers, not just the one it is anchored on.
+            taken = self._occupied(self._new_screen)
+            free = free_anchors(taken, cols, rows)
+            placeholders = {
+                "type": definition["label"],
+                "screen": str(self._new_screen),
             }
-            free = [i for i in range(1, max_positions + 1) if i not in used]
 
             _LOGGER.debug(f"Free positions: {free}")
 
@@ -865,19 +897,24 @@ class OxrsOptionsFlow(OptionsFlow):
                     CONF_ICON: user_input.get(CONF_ICON, definition["icon"]),
                 }
                 self._apply_details_input(self._new_tile_config, self._new_type, user_input)
-                if self._new_type == "playlists":
-                    return await self.async_step_add_tile_playlists()
-                # Go to background image selection step
-                return await self.async_step_add_tile_background()
+                if user_input.get(FIELD_LARGER):
+                    if not larger_sizes(self._new_tile_config[CONF_TILE], taken, cols, rows):
+                        return self.async_show_form(
+                            step_id="add_tile_details",
+                            data_schema=self._tile_details_schema(
+                                self._new_type, free, current=self._new_tile_config, larger=True
+                            ),
+                            errors={FIELD_LARGER: "no_larger_size"},
+                            description_placeholders=placeholders,
+                        )
+                    return await self.async_step_add_tile_size()
+                return await self._async_after_add_size()
 
             _LOGGER.debug("Showing tile details form")
             return self.async_show_form(
                 step_id="add_tile_details",
                 data_schema=self._tile_details_schema(self._new_type, free),
-                description_placeholders={
-                    "type": definition["label"],
-                    "screen": str(self._new_screen),
-                },
+                description_placeholders=placeholders,
             )
         except Exception as err:
             _LOGGER.error(f"Error in async_step_add_tile_details: {err}", exc_info=True)
@@ -1040,8 +1077,10 @@ class OxrsOptionsFlow(OptionsFlow):
 
     @staticmethod
     def _tile_choice_label(tile: dict[str, Any]) -> str:
+        w, h = tile_span(tile.get(CONF_SPAN))
+        size = f" {w}×{h}" if (w, h) != ONE else ""
         return (
-            f"S{tile[CONF_SCREEN]}·T{tile[CONF_TILE]} "
+            f"S{tile[CONF_SCREEN]}·T{tile[CONF_TILE]}{size} "
             f"[{tile.get(CONF_TYPE, '')}] "
             f"{tile.get(CONF_LABEL) or ''} ({tile.get(CONF_ENTITY_ID, 'N/A')})"
         )
@@ -1094,14 +1133,15 @@ class OxrsOptionsFlow(OptionsFlow):
             definition = TILE_TYPES[self._new_type]
             draft = self._new_tile_config
 
-            max_positions = self._grid_positions()
-            # Positions held by OTHER tiles on the screen; the tile's own is free.
-            used = {
-                t[CONF_TILE]
-                for index, t in enumerate(self._tiles)
-                if index != self._edit_index and t[CONF_SCREEN] == self._new_screen
+            cols, rows = self._grid()
+            # Cells covered by OTHER tiles on the screen, each at its full size;
+            # the tile's own cells are free for it.
+            taken = self._occupied(self._new_screen, skip=self._edit_index)
+            free = free_anchors(taken, cols, rows)
+            placeholders = {
+                "type": definition["label"],
+                "screen": str(self._new_screen),
             }
-            free = [i for i in range(1, max_positions + 1) if i not in used]
 
             if user_input is not None:
                 draft[CONF_TILE] = int(user_input[CONF_TILE])
@@ -1109,21 +1149,133 @@ class OxrsOptionsFlow(OptionsFlow):
                 draft[CONF_LABEL] = user_input.get(CONF_LABEL, "")
                 draft[CONF_ICON] = user_input.get(CONF_ICON, definition["icon"])
                 self._apply_details_input(draft, self._new_type, user_input)
-                if self._new_type == "playlists":
-                    return await self.async_step_edit_tile_playlists()
-                return await self.async_step_edit_tile_background()
+                if user_input.get(FIELD_LARGER):
+                    if not larger_sizes(draft[CONF_TILE], taken, cols, rows):
+                        return self.async_show_form(
+                            step_id="edit_tile_details",
+                            data_schema=self._tile_details_schema(
+                                self._new_type, free, current=draft, larger=True
+                            ),
+                            errors={FIELD_LARGER: "no_larger_size"},
+                            description_placeholders=placeholders,
+                        )
+                    return await self.async_step_edit_tile_size()
+                # Unticked: the tile goes back to one cell.
+                draft.pop(CONF_SPAN, None)
+                return await self._async_after_edit_size()
 
             return self.async_show_form(
                 step_id="edit_tile_details",
-                data_schema=self._tile_details_schema(self._new_type, free, current=draft),
-                description_placeholders={
-                    "type": definition["label"],
-                    "screen": str(self._new_screen),
-                },
+                data_schema=self._tile_details_schema(
+                    self._new_type,
+                    free,
+                    current=draft,
+                    larger=tile_span(draft.get(CONF_SPAN)) != ONE,
+                ),
+                description_placeholders=placeholders,
             )
         except Exception as err:
             _LOGGER.error(f"Error in async_step_edit_tile_details: {err}", exc_info=True)
             return self.async_abort(reason="invalid_details")
+
+    async def _async_size_step(
+        self,
+        *,
+        step_id: str,
+        user_input: dict[str, Any] | None,
+        next_step: Any,
+        skip: int | None = None,
+    ) -> ConfigFlowResult:
+        """Choose the size of the tile being added or edited.
+
+        Offers only sizes that fit where the tile is, which is what keeps one tile
+        from ever covering another: the firmware stacks overlapping tiles rather
+        than refusing them.
+        """
+        assert self._new_tile_config is not None
+        draft = self._new_tile_config
+        cols, rows = self._grid()
+        taken = self._occupied(draft[CONF_SCREEN], skip=skip)
+        sizes = larger_sizes(draft[CONF_TILE], taken, cols, rows)
+        if not sizes:
+            # Nothing larger fits (the position changed since the last step).
+            draft.pop(CONF_SPAN, None)
+            return await next_step()
+
+        style = TILE_TYPES[draft[CONF_TYPE]]["style"]
+        tested = is_size_tested(style)
+
+        if user_input is not None:
+            chosen = parse_size_value(user_input.get("size"))
+            draft[CONF_SPAN] = list(chosen if chosen in sizes else sizes[0])
+            return await next_step()
+
+        current = tile_span(draft.get(CONF_SPAN))
+        default = current if current in sizes else sizes[0]
+        hints = []
+        if current != ONE and current not in sizes:
+            hints.append(
+                "The tile's current size does not fit at this position, so a smaller one is chosen."
+            )
+        if not tested:
+            hints.append("Sizes above 1 × 1 are untested for this kind of tile.")
+        if (cols, rows) not in sizes and taken and cols * rows > 1:
+            hints.append("Full screen needs an empty screen.")
+        schema = vol.Schema(
+            {
+                vol.Required("size", default=size_value(default)): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            {
+                                "value": size_value(s),
+                                "label": size_label(s, cols, rows, experimental=not tested),
+                            }
+                            for s in sizes
+                        ],
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+            }
+        )
+        return self.async_show_form(
+            step_id=step_id,
+            data_schema=schema,
+            description_placeholders={
+                "tile": f"Screen {draft[CONF_SCREEN]}, position {draft[CONF_TILE]}",
+                "hint": " ".join(hints),
+            },
+        )
+
+    async def async_step_add_tile_size(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Choose how many cells the new tile covers."""
+        return await self._async_size_step(
+            step_id="add_tile_size",
+            user_input=user_input,
+            next_step=self._async_after_add_size,
+        )
+
+    async def _async_after_add_size(self) -> ConfigFlowResult:
+        if self._new_type == "playlists":
+            return await self.async_step_add_tile_playlists()
+        return await self.async_step_add_tile_background()
+
+    async def async_step_edit_tile_size(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Choose how many cells the edited tile covers."""
+        return await self._async_size_step(
+            step_id="edit_tile_size",
+            user_input=user_input,
+            next_step=self._async_after_edit_size,
+            skip=self._edit_index,
+        )
+
+    async def _async_after_edit_size(self) -> ConfigFlowResult:
+        if self._new_type == "playlists":
+            return await self.async_step_edit_tile_playlists()
+        return await self.async_step_edit_tile_background()
 
     async def async_step_edit_tile_playlists(
         self, user_input: dict[str, Any] | None = None

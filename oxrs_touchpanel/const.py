@@ -139,6 +139,14 @@ DEFAULT_LAYOUT = {"horizontal": 3, "vertical": 3}
 CONF_HARDWARE = "hardware"
 CONF_LAYOUT = "layout"
 
+# A tile's size in cells, [width, height], stored on the tile and ABSENT for the
+# ordinary 1 x 1. See grid.py; the firmware's key for it is span {right, down}.
+CONF_SPAN = "span"
+
+# The "make this tile larger" checkbox on the add/edit tile form. Only a form
+# field: it decides whether the size step is shown, and is never stored.
+FIELD_LARGER = "larger"
+
 # CCT firmware ranges (verified from classColorPicker.cpp)
 KELVIN_MIN = 2000
 KELVIN_MAX = 6000

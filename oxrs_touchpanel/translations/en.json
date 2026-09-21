@@ -63,10 +63,19 @@
           "sublabel_entity_id": "Sub-label source (optional) - shows this entity's state under the tile",
           "indicator_secondary_entity_id": "Secondary sensor (optional, indicator tiles only) - shown alongside the primary value",
           "album_art": "Show album art as the tile background (transport tiles only) - replaces the play/pause icon",
-          "background_color": "Tile background colour"
+          "background_color": "Tile background colour",
+          "larger": "Make this tile larger"
         },
         "data_description": {
-          "background_color": "Leave on black for no colour of its own - the tile then follows its screen's colour."
+          "background_color": "Leave on black for no colour of its own - the tile then follows its screen's colour.",
+          "larger": "Next you choose from the sizes that fit at this position."
+        }
+      },
+      "add_tile_size": {
+        "title": "Add a tile — size",
+        "description": "Choose a size for {tile}. {hint}",
+        "data": {
+          "size": "Size"
         }
       },
       "add_tile_playlists": {
@@ -100,14 +109,23 @@
           "sublabel_entity_id": "Sub-label source (optional) - shows this entity's state under the tile",
           "indicator_secondary_entity_id": "Secondary sensor (optional, indicator tiles only) - shown alongside the primary value",
           "album_art": "Show album art as the tile background (transport tiles only) - replaces the play/pause icon",
-          "background_color": "Tile background colour"
+          "background_color": "Tile background colour",
+          "larger": "Make this tile larger"
         },
         "data_description": {
           "entity_id": "Changing the entity keeps everything else about the tile.",
           "sublabel_entity_id": "Clear the field to stop showing a sub-label.",
-          "background_color": "Leave on black for no colour of its own - the tile then follows its screen's colour."
+          "background_color": "Leave on black for no colour of its own - the tile then follows its screen's colour.",
+          "larger": "Next you choose from the sizes that fit at this position."
         },
         "description": "Change anything below. The screen and the tile type can't change - to move a tile to another screen or change its type, remove it and add a new one."
+      },
+      "edit_tile_size": {
+        "title": "Edit a tile — size",
+        "description": "Choose a size for {tile}. {hint}",
+        "data": {
+          "size": "Size"
+        }
       },
       "edit_tile_playlists": {
         "title": "Edit a tile — choose playlists",
@@ -262,7 +280,8 @@
       "invalid_image_name": "Name cannot start with an underscore (reserved for built-ins).",
       "icon_must_be_png": "Custom icons must be PNG format.",
       "no_playlists_selected": "Choose at least one playlist.",
-      "too_many_playlists": "Choose at most 6 playlists."
+      "too_many_playlists": "Choose at most 6 playlists.",
+      "no_larger_size": "No larger size fits at that position. Choose another position, or make room first."
     }
   }
 }
