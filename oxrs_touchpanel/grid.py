@@ -28,6 +28,10 @@ ONE: Size = (1, 1)
 # cells on real hardware, so they are offered marked as experimental.
 TESTED_BIG_STYLES = frozenset({"button", "indicator", "buttonPrevNext"})
 
+# From the firmware (classScreen::_makeScreenLayout and classTile::_tileWidth).
+FOOTER_HEIGHT = 33
+TILE_PADDING = 5
+
 # The sizes people reach for first, in the order they are listed.
 _PREFERRED: tuple[Size, ...] = ((2, 1), (1, 2), (2, 2))
 
@@ -163,6 +167,21 @@ def size_label(size: Size, cols: int, rows: int, *, experimental: bool = False) 
     else:
         text = f"{size[0]} × {size[1]}"
     return f"{text} (experimental)" if experimental else text
+
+
+def tile_pixels(screen_w: int, screen_h: int, cols: int, rows: int, size: Size) -> Size:
+    """Pixel size of a tile, as the firmware lays it out.
+
+    A cell is the screen width divided by the columns wide, and the screen height
+    less a 33 px footer divided by the rows tall (integer division both times); a
+    tile of size (w, h) is w cells by h cells less 5 px of padding on every side.
+    So a tile is NOT square: on either 480 x 480 or 320 x 480 hardware with a
+    3 x 3 or 2 x 3 grid a 1 x 1 is 150 x 139 px, and a 3 x 3 on the 480 board is
+    470 x 437.
+    """
+    cell_w = screen_w // cols
+    cell_h = (screen_h - FOOTER_HEIGHT) // rows
+    return cell_w * size[0] - 2 * TILE_PADDING, cell_h * size[1] - 2 * TILE_PADDING
 
 
 def span_payload(position: int, value: Any, cols: int, rows: int) -> dict[str, int] | None:

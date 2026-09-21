@@ -50,6 +50,18 @@ BOARDS: dict[str, Board] = {
 }
 
 
+# The firmware's defaults (SCREEN_WIDTH / SCREEN_HEIGHT in globalDefines.h), used when a
+# panel's board is not known. The smaller screen is the safe assumption: art sized for it
+# is never larger than the tile.
+DEFAULT_SCREEN = (320, 480)
+
+
+def screen_size(hardware: str | None) -> tuple[int, int]:
+    """(width, height) in pixels of a board's screen, or the firmware default."""
+    board = BOARDS.get(hardware or "")
+    return (board.width, board.height) if board else DEFAULT_SCREEN
+
+
 def hardware_from_adopt(payload: Any) -> str | None:
     """The board name in an adopt message, or None if it does not carry one."""
     try:

@@ -219,9 +219,17 @@
       },
       "album_art_settings": {
         "title": "Album art",
-        "description": "Album art is shrunk to fit one MQTT message. The default of {default} bytes is the largest size measured working on real hardware; raising it may make art silently fail to draw, and lowering it trades colour for reliability. Art is rendered at {size}px.",
+        "description": "Album art is shrunk to fit one MQTT message ({default} bytes by default, the largest size measured working on real hardware) and drawn at {size} px on a single tile. On a tile bigger than one cell the panel enlarges a small image, so the image stays small however big the tile is.",
         "data": {
-          "album_art_budget": "Maximum size per image"
+          "album_art_budget": "Maximum size per image",
+          "album_art_zoom": "Big tile zoom (%)",
+          "album_art_max_source": "Largest image edge (px)",
+          "album_art_text": "Draw title and artist on big tiles"
+        },
+        "data_description": {
+          "album_art_zoom": "How much the panel enlarges the picture on a tile bigger than 1 × 1 (100 to 200). Higher uploads a smaller image, which looks blockier.",
+          "album_art_max_source": "The longest edge of the image sent for a big tile. Raising it gives a sharper picture but needs more of the panel's memory. A panel sent an image it cannot hold may crash, and album art is re-sent every time it reconnects, so raise it only after testing.",
+          "album_art_text": "Adds the track title and artist to the picture on tiles of at least 2 × 2, where the firmware's own text would be tiny."
         }
       },
       "panel_settings": {

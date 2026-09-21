@@ -15,20 +15,27 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_state_change_event
 
 from .albumart import (
+    TEXT_MIN_CELLS,
+    ArtTarget,
     art_image_name,
     art_revision,
     art_source_url,
-    async_build_art_payload,
+    async_build_art,
+    big_art_geometry,
 )
-from .boards import hardware_from_adopt, layout_from_data
-from .grid import span_payload
+from .boards import hardware_from_adopt, layout_from_data, screen_size
+from .grid import ONE, clipped, span_payload, tile_pixels, tile_span
 from .colors import BLACK, normalize_rgb, override_payload, rgb_payload
 from .const import (
+    ALBUM_ART_SIZE,
     CONF_ACTION_ENTITY,
     CONF_ACTION_TILE_TYPE,
     CONF_ACTIONS,
     CONF_ALBUM_ART,
     CONF_ALBUM_ART_BUDGET,
+    CONF_ALBUM_ART_MAX_SOURCE,
+    CONF_ALBUM_ART_TEXT,
+    CONF_ALBUM_ART_ZOOM,
     CONF_BACKGROUND_COLOR,
     CONF_ENTITY_ID,
     CONF_HARDWARE,
@@ -46,10 +53,17 @@ from .const import (
     CONF_TILES,
     CONF_TYPE,
     DEFAULT_ALBUM_ART_BUDGET,
+    DEFAULT_ALBUM_ART_MAX_SOURCE,
+    DEFAULT_ALBUM_ART_TEXT,
+    DEFAULT_ALBUM_ART_ZOOM,
     DEFAULT_BACKGROUND_COLOR,
     DEFAULT_ICON_ON_COLOR,
     DOMAIN,
     MANUFACTURER,
+    MAX_ALBUM_ART_MAX_SOURCE,
+    MAX_ALBUM_ART_ZOOM,
+    MIN_ALBUM_ART_MAX_SOURCE,
+    MIN_ALBUM_ART_ZOOM,
     MODEL,
     PANEL_SETTINGS,
     signal_available,
@@ -97,7 +111,7 @@ def _augment_tile_state(
     state: dict[str, Any],
     tile: dict[str, Any],
     library: SharedMediaLibrary,
-    album_art_names: set[str] | None = None,
+    art: ArtTarget | None = None,
 ) -> None:
     """Apply common cross-tile-type extras to a cmnd state payload.
 
@@ -139,9 +153,10 @@ def _augment_tile_state(
         tile:    Tile config dict (may contain background_image_name /
                  sublabel_entity_id / icon / album_art)
         library: Shared media library, to confirm both halves of a pair exist
-        album_art_names: Art image names currently loaded on this panel. None
-                 means "unknown", which suppresses art rather than referencing
-                 an image the panel may not hold.
+        art:     The tile's album-art target (image name, size, zoom, colour and
+                 whether the panel holds the image), from OxrsPanel._art_target.
+                 None means "not an art tile", or "unknown", which suppresses art
+                 rather than referencing an image the panel may not hold.
     """
     image_name = tile.get("background_image_name")
     # Hiding the icon only makes sense if there is an image to show instead. A
@@ -174,22 +189,40 @@ def _augment_tile_state(
         if swapped is not None:
             state["icon"] = swapped
 
-    if tile.get(CONF_ALBUM_ART):
-        art_entity_id = tile.get(CONF_ENTITY_ID) or tile.get(CONF_ACTION_ENTITY)
-        art_name = art_image_name(art_entity_id) if art_entity_id else None
-        if art_name and art_name in (album_art_names or set()):
-            state["backgroundImage"] = {"name": art_name}
+    if tile.get(CONF_ALBUM_ART) and art is not None:
+        # zoom is only set on a tile larger than one cell, which is also when
+        # the cover's colour and the text-in-image matter.
+        large = art.zoom is not None
+        if art.loaded:
+            image: dict[str, Any] = {"name": art.name}
+            if large:
+                image["zoom"] = art.zoom
+            state["backgroundImage"] = image
             state["text"] = " "
             # The icon is hidden behind the art anyway; dropping it keeps the
             # payload honest about what the panel will actually draw.
             state.pop("icon", None)
+            if large:
+                # The image is smaller than the tile when it hit the size cap, so
+                # paint the margin the cover's own edge colour.
+                if art.color is not None:
+                    state["backgroundColorRgb"] = rgb_payload(art.color)
+                # The title is already in the picture. A sub-label the user chose
+                # themselves is theirs to keep.
+                if art.text_in_image and not tile.get(CONF_SUBLABEL_ENTITY_ID):
+                    state["subLabel"] = ""
             _LOGGER.debug(
-                f"Injected album art '{art_name}' "
+                f"Injected album art '{art.name}' "
                 f"for S{state.get('screen')}/T{state.get('tile')}"
             )
         else:
             state["backgroundImage"] = {}
             state["text"] = ""   # empty text restores the icon (see note above)
+            if large:
+                # Back to the tile's own colour; black is "inherit its screen's".
+                state["backgroundColorRgb"] = override_payload(
+                    tile.get(CONF_BACKGROUND_COLOR)
+                ) or {"r": 0, "g": 0, "b": 0}
 
 
 class OxrsPanel:
@@ -218,6 +251,12 @@ class OxrsPanel:
         # reset when the panel reconnects, since it keeps no images across a
         # restart. Membership doubles as "this name is safe to reference".
         self._album_art: dict[str, str] = {}
+        # What the last encoding of each image learned: (edge colour, text drawn).
+        self._album_art_meta: dict[str, tuple[tuple[int, int, int], bool]] = {}
+        # The board the panel says it is right now. Needed for tile pixel sizes, and
+        # unlike the stored board it is known for panels added before boards were
+        # recorded.
+        self._reported_hardware: str | None = None
         # The stored board only warns once if the panel later reports another.
         self._warned_hardware = False
 
@@ -291,6 +330,83 @@ class OxrsPanel:
             channels = DEFAULT_ICON_ON_COLOR
         return rgb_payload(channels)
 
+    def _int_option(self, key: str, default: int, low: int, high: int) -> int:
+        """An integer option, clamped to its range, falling back to its default."""
+        try:
+            value = int(self.entry.options.get(key, default))
+        except (TypeError, ValueError):
+            value = default
+        return max(low, min(high, value))
+
+    @property
+    def album_art_zoom(self) -> int:
+        """How much the panel enlarges album art on a tile bigger than 1 x 1 (%)."""
+        return self._int_option(
+            CONF_ALBUM_ART_ZOOM, DEFAULT_ALBUM_ART_ZOOM, MIN_ALBUM_ART_ZOOM, MAX_ALBUM_ART_ZOOM
+        )
+
+    @property
+    def album_art_max_source(self) -> int:
+        """Longest edge, in pixels, of the image uploaded for a big tile."""
+        return self._int_option(
+            CONF_ALBUM_ART_MAX_SOURCE,
+            DEFAULT_ALBUM_ART_MAX_SOURCE,
+            MIN_ALBUM_ART_MAX_SOURCE,
+            MAX_ALBUM_ART_MAX_SOURCE,
+        )
+
+    @property
+    def album_art_text(self) -> bool:
+        """Whether to draw title and artist into the art of tiles that are big enough."""
+        return bool(self.entry.options.get(CONF_ALBUM_ART_TEXT, DEFAULT_ALBUM_ART_TEXT))
+
+    def _tile_size(self, tile: dict[str, Any]) -> tuple[int, int]:
+        """How many cells a tile covers, clipped to the grid as the firmware would."""
+        layout = self.layout
+        return clipped(
+            tile.get(CONF_TILE, 1),
+            tile_span(tile.get(CONF_SPAN)),
+            layout["horizontal"],
+            layout["vertical"],
+        )
+
+    def _art_pixels(self, size: tuple[int, int]) -> tuple[int, int]:
+        """Pixel size of the image to upload for an art tile of this size."""
+        if size == ONE:
+            return ALBUM_ART_SIZE, ALBUM_ART_SIZE
+        layout = self.layout
+        width, height = screen_size(self._reported_hardware or self.hardware)
+        tile_px = tile_pixels(width, height, layout["horizontal"], layout["vertical"], size)
+        return big_art_geometry(tile_px, self.album_art_zoom, self.album_art_max_source)
+
+    def _wants_art_text(self, size: tuple[int, int]) -> bool:
+        """Whether title and artist are drawn into the picture at this tile size."""
+        return (
+            self.album_art_text
+            and size[0] >= TEXT_MIN_CELLS
+            and size[1] >= TEXT_MIN_CELLS
+        )
+
+    def _art_target(self, tile: dict[str, Any]) -> ArtTarget | None:
+        """What a tile needs to show its player's art, or None if it is not an art tile."""
+        if not tile.get(CONF_ALBUM_ART):
+            return None
+        entity_id = tile.get(CONF_ENTITY_ID) or tile.get(CONF_ACTION_ENTITY)
+        if not entity_id:
+            return None
+        size = self._tile_size(tile)
+        name = art_image_name(entity_id, size)
+        meta = self._album_art_meta.get(name)
+        large = size != ONE
+        return ArtTarget(
+            name=name,
+            size=size,
+            zoom=self.album_art_zoom if large else None,
+            color=meta[0] if (large and meta) else None,
+            loaded=name in self._album_art,
+            text_in_image=bool(large and meta and meta[1]),
+        )
+
     async def async_refresh_album_art(
         self, tile: dict[str, Any], *, force: bool = False
     ) -> bool:
@@ -305,20 +421,32 @@ class OxrsPanel:
         force=True re-uploads even when the revision matches, which is what a
         reconnect needs: the panel has forgotten every image, while this
         object still remembers sending them.
+
+        Each tile SIZE has its own image (see art_image_name), encoded to that
+        tile's proportions, and on a big tile the title and artist are drawn into
+        it - so there the revision includes them, and a title change re-encodes.
         """
         entity_id = tile.get(CONF_ENTITY_ID) or tile.get(CONF_ACTION_ENTITY)
         if not entity_id:
             return False
 
-        name = art_image_name(entity_id)
+        size = self._tile_size(tile)
+        name = art_image_name(entity_id, size)
         state = self.hass.states.get(entity_id)
         revision = art_revision(state)
         url = art_source_url(self.hass, state)
+        wants_text = self._wants_art_text(size)
+        title = artist = None
+        if wants_text and state is not None and revision is not None:
+            title = state.attributes.get("media_title")
+            artist = state.attributes.get("media_artist")
+            revision = f"{revision}|{title}|{artist}"
 
         if not url or revision is None:
             # Nothing playing, or a player with no artwork. Forget the name so
             # _augment_tile_state clears the background instead of leaving the
             # previous cover on screen.
+            self._album_art_meta.pop(name, None)
             if self._album_art.pop(name, None) is not None:
                 _LOGGER.debug(f"Album art for {entity_id} no longer available")
                 return True
@@ -327,17 +455,26 @@ class OxrsPanel:
         if not force and self._album_art.get(name) == revision:
             return False
 
-        payload = await async_build_art_payload(
-            self.hass, url, name, self.album_art_budget
+        built = await async_build_art(
+            self.hass,
+            url,
+            name,
+            self.album_art_budget,
+            self._art_pixels(size),
+            title=title,
+            artist=artist,
+            text=wants_text,
         )
-        if payload is None:
+        if built is None:
             return False
+        payload, encoded = built
 
         await mqtt.async_publish(
             self.hass, topic_cmnd(self.client_id), json.dumps(payload)
         )
         first_upload = name not in self._album_art
         self._album_art[name] = revision
+        self._album_art_meta[name] = (encoded.color, encoded.text_drawn)
         _LOGGER.debug(f"Pushed album art '{name}' for {entity_id}")
         return first_upload or force
 
@@ -598,7 +735,7 @@ class OxrsPanel:
                             temp_tile = {**tile, CONF_ENTITY_ID: action_entity}
                             state = handler["build_state"](self.hass, temp_tile)
                             if state is not None:
-                                _augment_tile_state(self.hass, state, tile, self.library, set(self._album_art))
+                                _augment_tile_state(self.hass, state, tile, self.library, self._art_target(tile))
                                 payload_tiles.append(state)
                 continue
             
@@ -609,7 +746,7 @@ class OxrsPanel:
                 continue
             state = handler["build_state"](self.hass, tile)
             if state is not None:
-                _augment_tile_state(self.hass, state, tile, self.library, set(self._album_art))
+                _augment_tile_state(self.hass, state, tile, self.library, self._art_target(tile))
                 payload_tiles.append(state)
         
         if payload_tiles:
@@ -719,7 +856,13 @@ class OxrsPanel:
         panel keeps no images across a restart, so a cached revision here says
         nothing about what the panel currently holds.
         """
+        seen: set[str] = set()
         for tile in self.album_art_tiles:
+            target = self._art_target(tile)
+            if target is not None:
+                if target.name in seen:
+                    continue  # another tile of the same size already sent it
+                seen.add(target.name)
             try:
                 await self.async_refresh_album_art(tile, force=True)
             except Exception as err:
@@ -745,7 +888,7 @@ class OxrsPanel:
         if state is None:
             return
         _augment_tile_state(
-            self.hass, state, tile, self.library, set(self._album_art)
+            self.hass, state, tile, self.library, self._art_target(tile)
         )
         await mqtt.async_publish(
             self.hass, topic_cmnd(self.client_id), json.dumps({"tiles": [state]})
@@ -819,7 +962,7 @@ class OxrsPanel:
 
             state = handler["build_state"](self.hass, temp_tile)
             if state is not None:
-                _augment_tile_state(self.hass, state, tile, self.library, set(self._album_art))
+                _augment_tile_state(self.hass, state, tile, self.library, self._art_target(tile))
                 self.hass.async_create_task(
                     mqtt.async_publish(
                         self.hass,
@@ -862,7 +1005,7 @@ class OxrsPanel:
         await asyncio.sleep(0.6)
         state = handler["build_state"](self.hass, build_tile)
         if state is not None:
-            _augment_tile_state(self.hass, state, augment_tile, self.library, set(self._album_art))
+            _augment_tile_state(self.hass, state, augment_tile, self.library, self._art_target(augment_tile))
             await mqtt.async_publish(
                 self.hass,
                 topic_cmnd(self.client_id),
@@ -1014,6 +1157,8 @@ class OxrsPanel:
         it under existing tiles would move every one of them.
         """
         reported = hardware_from_adopt(msg.payload)
+        if reported:
+            self._reported_hardware = reported
         if self._warned_hardware or not reported or not self.hardware:
             return
         if reported != self.hardware:

@@ -49,6 +49,9 @@ from .const import (
     BUILTIN_ICONS,
     CONF_ALBUM_ART,
     CONF_ALBUM_ART_BUDGET,
+    CONF_ALBUM_ART_MAX_SOURCE,
+    CONF_ALBUM_ART_TEXT,
+    CONF_ALBUM_ART_ZOOM,
     CONF_BACKGROUND_COLOR,
     CONF_CLIENT_ID,
     CONF_ENTITY_ID,
@@ -69,14 +72,21 @@ from .const import (
     CONF_TILES,
     CONF_TYPE,
     DEFAULT_ALBUM_ART_BUDGET,
+    DEFAULT_ALBUM_ART_MAX_SOURCE,
+    DEFAULT_ALBUM_ART_TEXT,
+    DEFAULT_ALBUM_ART_ZOOM,
     DEFAULT_BACKGROUND_COLOR,
     DEFAULT_ICON_ON_COLOR,
     DOMAIN,
     FIELD_LARGER,
     LIBRARY_DATA_KEY,
     MAX_ALBUM_ART_BUDGET,
+    MAX_ALBUM_ART_MAX_SOURCE,
+    MAX_ALBUM_ART_ZOOM,
     MAX_PLAYLISTS,
     MIN_ALBUM_ART_BUDGET,
+    MIN_ALBUM_ART_MAX_SOURCE,
+    MIN_ALBUM_ART_ZOOM,
     PANEL_SETTINGS,
 )
 from .library import (
@@ -444,25 +454,30 @@ class OxrsOptionsFlow(OptionsFlow):
     async def async_step_album_art_settings(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Set the size ceiling for album art pushed to this panel.
+        """Set how album art is sized for this panel.
 
-        Panel-level rather than per-tile: the limit is a property of the
-        firmware's MQTT buffer, not of any one tile. Raising it past what the
-        firmware accepts makes art silently fail to draw, so the default sits
-        under the largest payload measured working on real hardware.
+        Panel-level rather than per-tile: the limits are properties of the
+        firmware's MQTT buffer and memory, not of any one tile. Raising the byte
+        budget past what the firmware accepts makes art silently fail to draw, and
+        raising the largest image edge past what the panel can hold risks a crash
+        that repeats on every reconnect, so the defaults sit at what is known to
+        work. They are settings, not constants, so they can be tuned once tested
+        on real hardware.
         """
         if user_input is not None:
             options = dict(self._entry.options)
             options[CONF_ALBUM_ART_BUDGET] = int(user_input[CONF_ALBUM_ART_BUDGET])
+            options[CONF_ALBUM_ART_ZOOM] = int(user_input[CONF_ALBUM_ART_ZOOM])
+            options[CONF_ALBUM_ART_MAX_SOURCE] = int(user_input[CONF_ALBUM_ART_MAX_SOURCE])
+            options[CONF_ALBUM_ART_TEXT] = bool(user_input.get(CONF_ALBUM_ART_TEXT))
             return self.async_create_entry(title="", data=options)
 
-        current = self._entry.options.get(
-            CONF_ALBUM_ART_BUDGET, DEFAULT_ALBUM_ART_BUDGET
-        )
+        current = self._entry.options
         schema = vol.Schema(
             {
                 vol.Required(
-                    CONF_ALBUM_ART_BUDGET, default=current
+                    CONF_ALBUM_ART_BUDGET,
+                    default=current.get(CONF_ALBUM_ART_BUDGET, DEFAULT_ALBUM_ART_BUDGET),
                 ): selector.NumberSelector(
                     selector.NumberSelectorConfig(
                         min=MIN_ALBUM_ART_BUDGET,
@@ -472,6 +487,34 @@ class OxrsOptionsFlow(OptionsFlow):
                         unit_of_measurement="bytes",
                     )
                 ),
+                vol.Required(
+                    CONF_ALBUM_ART_ZOOM,
+                    default=current.get(CONF_ALBUM_ART_ZOOM, DEFAULT_ALBUM_ART_ZOOM),
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=MIN_ALBUM_ART_ZOOM,
+                        max=MAX_ALBUM_ART_ZOOM,
+                        step=5,
+                        mode="box",
+                        unit_of_measurement="%",
+                    )
+                ),
+                vol.Required(
+                    CONF_ALBUM_ART_MAX_SOURCE,
+                    default=current.get(CONF_ALBUM_ART_MAX_SOURCE, DEFAULT_ALBUM_ART_MAX_SOURCE),
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=MIN_ALBUM_ART_MAX_SOURCE,
+                        max=MAX_ALBUM_ART_MAX_SOURCE,
+                        step=10,
+                        mode="box",
+                        unit_of_measurement="px",
+                    )
+                ),
+                vol.Required(
+                    CONF_ALBUM_ART_TEXT,
+                    default=current.get(CONF_ALBUM_ART_TEXT, DEFAULT_ALBUM_ART_TEXT),
+                ): selector.BooleanSelector(),
             }
         )
         return self.async_show_form(

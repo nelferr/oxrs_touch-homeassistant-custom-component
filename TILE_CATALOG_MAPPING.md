@@ -253,6 +253,47 @@ ordinary 1 x 1) and sent as the firmware's `span: {"right": w, "down": h}` only 
 - **Not solved by sizing:** the firmware draws icons and text at a fixed size, so a big tile is a bigger
   target and a bigger background image, not bigger controls. Album art scaling is a separate step.
 
+### A.10 Album art on big tiles
+
+A transport tile larger than 1 x 1 shows its cover the same way, but sized for the bigger tile.
+
+**How big a tile really is** (from the firmware: `classScreen::_makeScreenLayout`,
+`classTile::_tileWidth`). A cell is the screen width divided by the columns wide and the screen height
+less a 33 px footer divided by the rows tall, both integer divisions; a tile is its cells less 5 px of
+padding on every side. **Tiles are not square**, and the 300 and 460 px figures used earlier while
+sketching this were guesses and wrong.
+
+| Board | Grid | Cell | 1 x 1 | 2 x 2 | Full screen |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| WT32S3-86S / 86V (480 x 480) | 3 x 3 | 160 x 149 | 150 x 139 | 310 x 288 | 470 x 437 |
+| WT32-SC01 / SC01-PLUS (320 x 480) | 2 x 3 | 160 x 149 | 150 x 139 | 310 x 288 | 310 x 437 |
+
+- **The panel does the enlarging.** `backgroundImage` takes a `zoom` of 50-200 % and centres the image, so
+  the uploaded image is `tile pixels / zoom`, capped at a configurable longest edge (default 150 px).
+  Bytes and decoded size therefore stay what they are for a 1 x 1 tile however big the tile gets, which is
+  what removed the need to hold big-tile art back on the older SC01 boards.
+- **Proportions follow the tile.** The cover is centre-cropped to the tile's own aspect, so a wide tile gets
+  a wide image and nothing is stretched.
+- **A margin when the cap bites.** On a large tile the capped image is smaller than the tile, so the
+  tile's background colour is set to the cover's edge colour (`backgroundColorRgb` in the tile command,
+  which the firmware accepts at runtime) and the margin reads as part of the picture. When the art goes
+  away it is put back to the tile's own colour, or to black, which means "inherit the screen's".
+- **Title and artist are drawn into the picture** on tiles of at least 2 x 2, on a dark band, because
+  firmware text is a fixed small size. Off with the setting, and skipped if Pillow has no scalable font.
+  **Pillow's built-in font is close to ASCII-only** (measured: no accented letters, no en/em dash, no euro
+  sign; curly quotes and the ellipsis are fine), which would draw empty boxes for most Portuguese, French
+  or Spanish titles. So an undrawable character is swapped for a plain equivalent (`Radio` for the accented
+  spelling, `-` for a dash, `EUR` for the euro), a lone combining mark is dropped, and anything still
+  undrawable (CJK, emoji) becomes `?`. Bundling a font would render them properly; that is left as a
+  decision because it adds a binary file to the integration.
+  On such a tile the transport tile's own sub-label is blanked, unless the user chose a sub-label source.
+- **One image per player and size** (`art-hifi` for 1 x 1, `art-hifi-2x2` for 2 x 2) because the same
+  player can be shown on tiles of different sizes. A title change re-encodes, since it is in the picture.
+- **Settings, not constants**, in *Album art settings*: byte budget, zoom (100-200), largest image edge
+  (60-460) and the text switch. The edge is the safety limit: album art is re-sent on every reconnect, so
+  an image too big for a board would crash it again each time.
+- **A 1 x 1 tile is unchanged**, byte for byte.
+
 ### A.4 Icons
 
 The 65 icons generated for this catalog ship inside the integration as
