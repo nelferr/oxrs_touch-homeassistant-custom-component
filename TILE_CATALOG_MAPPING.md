@@ -290,9 +290,13 @@ sketching this were guesses and wrong.
 - **One image per player and size** (`art-hifi` for 1 x 1, `art-hifi-2x2` for 2 x 2) because the same
   player can be shown on tiles of different sizes. A title change re-encodes, since it is in the picture.
 - **Settings, not constants**, in *Album art settings*: byte budget, zoom (100-200), largest image edge
-  (60-460) and the text switch. The edge is the safety limit: album art is re-sent on every reconnect, so
+  (60-480) and the text switch. The edge is the safety limit: album art is re-sent on every reconnect, so
   an image too big for a board would crash it again each time.
 - **A 1 x 1 tile is unchanged**, byte for byte.
+- **Panel text is cleaned** (`textsafe.py`, v1.16.0). The firmware draws labels in LVGL's stock Montserrat, which
+  has printable ASCII, the degree sign, the bullet and the symbol block only, so an accent shows as a hole. Labels,
+  sub-labels, `text` and dropdown names are sent with accents stripped, dashes straightened and anything else as `?`.
+  Applies to every tile, art or not; a bundled firmware font would make it unnecessary.
 
 ### A.4 Icons
 

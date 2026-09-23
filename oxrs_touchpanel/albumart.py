@@ -56,6 +56,7 @@ from homeassistant.helpers.network import NoURLAvailableError, get_url
 
 from .const import ALBUM_ART_FALLBACK_SIZES, ALBUM_ART_SIZE
 from .grid import ONE, Size
+from .textsafe import TRANSLITERATE
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -226,12 +227,7 @@ NOTDEF_PROBE = chr(0xFFFF)
 # ellipsis are fine). These are the common characters that stripping an accent cannot
 # handle by itself. The quote entries never fire with this font but cost nothing, and
 # cover a font that lacks them.
-_TRANSLITERATE = {
-    '\xdf': 'ss', '\xe6': 'ae', '\xc6': 'AE', '\u0153': 'oe', '\u0152': 'OE', '\xf8': 'o',
-    '\xd8': 'O', '\u0111': 'd', '\u0110': 'D', '\u0142': 'l', '\u0141': 'L', '\u2018': "'",
-    '\u2019': "'", '\u201c': '"', '\u201d': '"', '\u2013': '-', '\u2014': '-',
-    '\u20ac': 'EUR',
-}
+_TRANSLITERATE = TRANSLITERATE  # shared with the panel's own labels (textsafe.py)
 
 
 def _glyph_safe(font: Any, text: str) -> str:
