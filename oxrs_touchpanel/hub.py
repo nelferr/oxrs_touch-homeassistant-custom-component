@@ -77,6 +77,7 @@ from .const import (
 )
 from .models import OxrsTile
 from .library import SharedMediaLibrary
+from .textsafe import clean_payload_text
 from .tiles import TILE_TYPES, TileType
 
 _LOGGER = logging.getLogger(__name__)
@@ -223,6 +224,9 @@ def _augment_tile_state(
                 state["backgroundColorRgb"] = override_payload(
                     tile.get(CONF_BACKGROUND_COLOR)
                 ) or {"r": 0, "g": 0, "b": 0}
+
+    # Last, so it covers text from every source above and from the tile type itself.
+    clean_payload_text(state)
 
 
 class OxrsPanel:
@@ -684,6 +688,7 @@ class OxrsPanel:
                 if tile_span is not None:
                     tile_conf["span"] = tile_span
 
+                clean_payload_text(tile_conf)
                 tiles_conf.append(tile_conf)
             
             screen_names = self.entry.options.get(CONF_SCREEN_NAMES, {})
@@ -693,6 +698,7 @@ class OxrsPanel:
                 "screenLayout": self.layout,
                 "tiles": tiles_conf,
             }
+            clean_payload_text(screen_conf)
             # A screen's own colour; without one it inherits the panel's.
             screen_colors = self.entry.options.get(CONF_SCREEN_COLORS)
             screen_color = override_payload(
