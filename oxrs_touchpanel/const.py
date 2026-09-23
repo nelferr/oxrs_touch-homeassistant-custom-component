@@ -64,7 +64,7 @@ CONF_ALBUM_ART = "album_art"
 CONF_ALBUM_ART_BUDGET = "album_art_budget"
 DEFAULT_ALBUM_ART_BUDGET = 12000
 MIN_ALBUM_ART_BUDGET = 2048
-MAX_ALBUM_ART_BUDGET = 65536
+MAX_ALBUM_ART_BUDGET = 262144
 
 # Album art on a tile larger than one cell. The firmware enlarges a background image
 # by a zoom of 50-200 %, so the image uploaded is small and the panel does the
@@ -87,7 +87,7 @@ MAX_ALBUM_ART_ZOOM = 200
 CONF_ALBUM_ART_MAX_SOURCE = "album_art_max_source"
 DEFAULT_ALBUM_ART_MAX_SOURCE = 150
 MIN_ALBUM_ART_MAX_SOURCE = 60
-MAX_ALBUM_ART_MAX_SOURCE = 460
+MAX_ALBUM_ART_MAX_SOURCE = 480
 CONF_ALBUM_ART_TEXT = "album_art_text"
 DEFAULT_ALBUM_ART_TEXT = True
 
