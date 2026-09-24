@@ -62,17 +62,27 @@ def screen_size(hardware: str | None) -> tuple[int, int]:
     return (board.width, board.height) if board else DEFAULT_SCREEN
 
 
-def hardware_from_adopt(payload: Any) -> str | None:
-    """The board name in an adopt message, or None if it does not carry one."""
+def _adopt_firmware_field(payload: Any, field: str) -> str | None:
+    """A text field of the firmware object in an adopt message, or None."""
     try:
         data = json.loads(payload)
     except (TypeError, ValueError):
         return None
     firmware = data.get("firmware") if isinstance(data, dict) else None
-    hardware = firmware.get("hardware") if isinstance(firmware, dict) else None
-    if isinstance(hardware, str) and hardware.strip():
-        return hardware.strip()
+    value = firmware.get(field) if isinstance(firmware, dict) else None
+    if isinstance(value, str) and value.strip():
+        return value.strip()
     return None
+
+
+def hardware_from_adopt(payload: Any) -> str | None:
+    """The board name in an adopt message, or None if it does not carry one."""
+    return _adopt_firmware_field(payload, "hardware")
+
+
+def firmware_version_from_adopt(payload: Any) -> str | None:
+    """The firmware version in an adopt message, or None if it does not carry one."""
+    return _adopt_firmware_field(payload, "version")
 
 
 def layout_for(hardware: str | None) -> dict[str, int]:

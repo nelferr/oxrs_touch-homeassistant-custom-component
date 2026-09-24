@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
+from datetime import datetime, timezone
 from typing import Any
 
 from homeassistant.components import mqtt
@@ -23,7 +25,12 @@ from .albumart import (
     async_build_art,
     big_art_geometry,
 )
-from .boards import hardware_from_adopt, layout_from_data, screen_size
+from .boards import (
+    firmware_version_from_adopt,
+    hardware_from_adopt,
+    layout_from_data,
+    screen_size,
+)
 from .grid import ONE, clipped, span_payload, tile_pixels, tile_span
 from .colors import BLACK, normalize_rgb, override_payload, rgb_payload
 from .const import (
@@ -229,6 +236,20 @@ def _augment_tile_state(
     clean_payload_text(state)
 
 
+# What the panel reports about itself on its tele topic, beyond the climate readings:
+# tele key -> attribute on the panel.
+_SYSTEM_TELE: dict[str, str] = {
+    "wifiRssi": "wifi_rssi",
+    "wifiDisconnects": "wifi_disconnects",
+    "heapFreeBytes": "heap_free",
+    "heapMaxAllocBytes": "heap_max_alloc",
+    "psramFreeBytes": "psram_free",
+}
+
+# How long after pressing Reboot a restart still counts as the one we asked for.
+_EXPECTED_RESTART_WINDOW = 180.0
+
+
 class OxrsPanel:
     """Represents a single OXRS Touch Panel (one MQTT client id)."""
 
@@ -248,6 +269,22 @@ class OxrsPanel:
         self.temperature: float | None = None
         self.humidity: float | None = None
         self.esp32_temp: float | None = None
+        # More of what the panel reports about itself, for judging its stability.
+        self.uptime: int | None = None
+        self.wifi_rssi: int | None = None
+        self.wifi_disconnects: int | None = None
+        self.heap_free: int | None = None
+        self.heap_max_alloc: int | None = None
+        self.psram_free: int | None = None
+        # The firmware it says it runs (from its retained adopt message).
+        self.firmware_version: str | None = None
+        # Restarts we did not ask for, seen as the panel's uptime dropping. The count
+        # is restored by its sensor across a Home Assistant restart.
+        self.reboots: int = 0
+        self.last_reboot: str | None = None
+        self.last_reboot_uptime: int | None = None
+        self.last_reboot_firmware: str | None = None
+        self._restart_requested_at: float | None = None
         self._pushed_screens: set[int] = set()
         self._unsubs: list = []
         self.library = library
@@ -306,6 +343,8 @@ class OxrsPanel:
         _on_lwt re-pushes the configuration when it does - so the tiles are
         rebuilt without anything else being done.
         """
+        # So the uptime falling that follows is not counted as a fault.
+        self._restart_requested_at = time.monotonic()
         await mqtt.async_publish(
             self.hass, topic_cmnd(self.client_id), json.dumps({"restart": True})
         )
@@ -499,13 +538,17 @@ class OxrsPanel:
     @property
     def device_info(self) -> DeviceInfo:
         """Device registry entry for this panel."""
-        return DeviceInfo(
+        info = DeviceInfo(
             identifiers={(DOMAIN, self.client_id)},
             name=self.entry.title,
             manufacturer=MANUFACTURER,
             model=MODEL,
             hw_version=self.hardware,
         )
+        # Left out until known: an explicit None would clear a version already stored.
+        if self.firmware_version:
+            info["sw_version"] = self.firmware_version
+        return info
 
     async def async_setup(self) -> None:
         """Subscribe to panel topics and start tracking bound entities."""
@@ -1162,6 +1205,11 @@ class OxrsPanel:
         Only a warning: the grid was fixed when the panel was added, and changing
         it under existing tiles would move every one of them.
         """
+        version = firmware_version_from_adopt(msg.payload)
+        if version and version != self.firmware_version:
+            self.firmware_version = version
+            self._update_device_version(version)
+            async_dispatcher_send(self.hass, signal_tele(self.client_id))
         reported = hardware_from_adopt(msg.payload)
         if reported:
             self._reported_hardware = reported
@@ -1192,4 +1240,53 @@ class OxrsPanel:
             self.humidity = data["humidity"]
         if "esp32Temp" in data:
             self.esp32_temp = data["esp32Temp"]
+        for key, attr in _SYSTEM_TELE.items():
+            value = data.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                setattr(self, attr, value)
+        uptime = data.get("uptimeSeconds")
+        if isinstance(uptime, (int, float)) and not isinstance(uptime, bool):
+            previous, self.uptime = self.uptime, int(uptime)
+            if previous is not None and self.uptime < previous:
+                self._note_restart(previous)
         async_dispatcher_send(self.hass, signal_tele(self.client_id))
+
+    def _note_restart(self, uptime_before: int) -> None:
+        """The uptime went backwards, so the panel restarted since the last report.
+
+        A restart we asked for (the Reboot button) is expected; any other one is a
+        fault worth counting, with how long the panel had run and on which firmware,
+        so that stability can be compared between firmware versions.
+        """
+        asked = self._restart_requested_at
+        self._restart_requested_at = None
+        if asked is not None and time.monotonic() - asked < _EXPECTED_RESTART_WINDOW:
+            _LOGGER.debug("%s restarted as requested", self.client_id)
+            return
+        self.reboots += 1
+        self.last_reboot = datetime.now(timezone.utc).isoformat()
+        self.last_reboot_uptime = uptime_before
+        self.last_reboot_firmware = self.firmware_version
+        _LOGGER.warning(
+            "%s restarted by itself after %s s (firmware %s); %d unexpected restart(s) seen",
+            self.client_id,
+            uptime_before,
+            self.firmware_version or "unknown",
+            self.reboots,
+        )
+
+    def _update_device_version(self, version: str) -> None:
+        """Show the firmware version on the device page, and follow it when it changes.
+
+        Cosmetic, and it runs inside the adopt handler that also detects the board,
+        so nothing that goes wrong here may be allowed to stop that.
+        """
+        try:
+            from homeassistant.helpers import device_registry as dr
+
+            registry = dr.async_get(self.hass)
+            device = registry.async_get_device(identifiers={(DOMAIN, self.client_id)})
+            if device is not None and device.sw_version != version:
+                registry.async_update_device(device.id, sw_version=version)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Could not record firmware %s on the device: %s", version, err)
