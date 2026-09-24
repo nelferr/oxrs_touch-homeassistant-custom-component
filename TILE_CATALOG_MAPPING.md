@@ -180,6 +180,20 @@ retained - a retained restart would reboot the panel on every reconnect. The pan
 off MQTT and comes back announcing itself online, and `_on_lwt` re-pushes the configuration
 when it does; if the tiles do not return, **Push configuration** rebuilds them.
 
+**Health diagnostics (v1.17.0).** The panel's `tele/<id>` message carries more than the climate
+readings: `uptimeSeconds`, `wifiRssi`, `wifiDisconnects`, `heapFreeBytes`, `heapMaxAllocBytes` and
+`psramFreeBytes`. Each is a diagnostic sensor (Uptime, Wi-Fi signal, Wi-Fi disconnects, Free memory,
+Largest free memory block, Free PSRAM), so Home Assistant's history shows them over time.
+Also a **Firmware version** sensor, read from `firmware.version` in the retained adopt message and
+copied onto the device page (`sw_version`), so a run of faults can be lined up with the firmware.
+**Unexpected restarts** counts how often the uptime was seen to go backwards, excluding a restart
+asked for with the Reboot button (within 3 minutes of pressing it). Its attributes give when the last
+one was, how long the panel had run, and the firmware it had. A restart is only seen when the next
+tele arrives, so two restarts between reports count once, and a panel that restarts more often than
+it reports goes unseen; the Online sensor's history shows those, as a dropped connection is an
+off/on pair a second apart while a restart takes longer. The count is restored across a Home
+Assistant restart.
+
 **Removal cleanup.** A panel publishes two RETAINED messages
 (`OXRS-IO-MQTT-ESP32-LIB`): `stat/<id>/adopt` and `stat/<id>/lwt`. The manifest's
 `"mqtt": ["stat/+/adopt"]` is what makes HA offer a panel for setup, and a retained message
