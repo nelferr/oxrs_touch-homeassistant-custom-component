@@ -4,14 +4,23 @@ A Home Assistant custom component for integrating and configuring [OXRS](https:/
 
 ## Installation
 
-1. Clone or download this repository
-2. Copy the `oxrs_touchpanel` folder to your Home Assistant config directory:
+**With HACS:** add this repository under **HACS → ⋮ → Custom repositories** (category *Integration*), then
+download **OXRS Touch Panel**. Each release is a tag, so an older version can be picked with **Redownload**.
+
+**By hand:**
+
+1. Clone or download this repository (or a tagged release)
+2. Copy the `custom_components/oxrs_touchpanel` folder to your Home Assistant config directory, so it ends up at:
    ```
-   ~/.homeassistant/custom_components/
+   <config>/custom_components/oxrs_touchpanel
    ```
-3. Restart Home Assistant
-4. Navigate to **Settings** → **Devices & Services** → **Integrations**
-5. Click **Create Integration** and search for **OXRS Touch Panel**
+   Delete any previous copy first, so no stale files are left behind.
+
+Then, either way:
+
+1. Restart Home Assistant
+2. Navigate to **Settings** → **Devices & Services** → **Integrations**
+3. Click **Create Integration** and search for **OXRS Touch Panel**
 
 ## Configuration
 
