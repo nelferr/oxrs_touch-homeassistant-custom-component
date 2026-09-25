@@ -8,7 +8,7 @@ nothing here needs firmware changes unless explicitly marked.
 **Sources**
 - Card catalog: <https://jtenniswood.github.io/espcontrol/card-types/> (ESPHome project — used only as a catalog of *what a panel tile can usefully do*, not as a spec)
 - OXRS protocol: <https://github.com/OXRS-IO/OXRS-IO-WEBSITE> → `docs/docs/firmware/touch-panel-esp32.md` (authoritative for everything in Part A)
-- This integration: `oxrs_touchpanel/tiles.py`, `config_flow.py`, `hub.py`, `library.py`
+- This integration: `custom_components/oxrs_touchpanel/tiles.py`, `config_flow.py`, `hub.py`, `library.py`
 
 ---
 
@@ -77,7 +77,7 @@ hides the icon, empty restores it**. Follow the code, not the docs.
    `device_class` to narrow the picker past the domain, `integration` to tie
    the type to one integration (offered only while it's loaded), and
    `suggested_icons` to lead the icon picker.
-2. If the card needs new artwork, add it to `oxrs_touchpanel/bundled_icons.json`
+2. If the card needs new artwork, add it to `custom_components/oxrs_touchpanel/bundled_icons.json`
    (and to `ICON_STATE_PAIRS` in `library.py` if it pictures an on/off pair).
 3. Nothing else. `hub.py` drives everything generically off the registry, and
    the config flow builds the type dropdown, the entity picker and the icon
@@ -315,7 +315,7 @@ sketching this were guesses and wrong.
 ### A.4 Icons
 
 The 65 icons generated for this catalog ship inside the integration as
-`oxrs_touchpanel/bundled_icons.json`, so there is nothing to upload.
+`custom_components/oxrs_touchpanel/bundled_icons.json`, so there is nothing to upload.
 
 - **Seeding.** On startup the shared library adds any bundled icon it lacks,
   under the category recorded in the JSON, and refreshes one whose artwork
