@@ -383,23 +383,31 @@ class OxrsOptionsFlow(OptionsFlow):
             return None
         return playlists_from_library(response)
 
+    def _other_panels(self) -> list[ConfigEntry]:
+        """Every other configured panel, to copy settings from."""
+        return [
+            entry
+            for entry in self.hass.config_entries.async_entries(DOMAIN)
+            if entry.entry_id != self._entry.entry_id
+        ]
+
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Show the tile-management menu."""
-        return self.async_show_menu(
-            step_id="init",
-            menu_options=[
-                "add_tile",
-                "edit_tile",
-                "remove_tile",
-                "rename_screen",
-                "manage_background_images",
-                "manage_custom_icons",
-                "panel_settings",
-                "album_art_settings",
-            ],
-        )
+        menu_options = [
+            "add_tile",
+            "edit_tile",
+            "remove_tile",
+            "rename_screen",
+            "manage_background_images",
+            "manage_custom_icons",
+            "panel_settings",
+            "album_art_settings",
+        ]
+        if self._other_panels():
+            menu_options.append("copy_from_panel")
+        return self.async_show_menu(step_id="init", menu_options=menu_options)
 
     async def async_step_panel_settings(
         self, user_input: dict[str, Any] | None = None
@@ -1490,6 +1498,75 @@ class OxrsOptionsFlow(OptionsFlow):
             }
         )
         return self.async_show_form(step_id="remove_tile", data_schema=schema)
+
+    # Options copied from another panel unconditionally: preferences, not tied to
+    # what is on screen or to one panel's own hardware quirks.
+    _COPY_PREFERENCE_KEYS = (CONF_PANEL_SETTINGS, CONF_BACKGROUND_COLOR, CONF_ICON_ON_COLOR)
+
+    # Copied only when the source panel has the same grid as this one. A tile's
+    # position number is row-major and depends on the column count (see grid.py), so
+    # the same number means a different cell on a different grid - and a position
+    # beyond the target grid's cell count has no cell at all, which the firmware does
+    # not define behaviour for. Album art sizing rides along with tiles rather than
+    # with the always-copied preferences, since a size safe on one board's memory may
+    # not be on another's.
+    _COPY_LAYOUT_KEYS = (
+        CONF_TILES,
+        CONF_SCREEN_NAMES,
+        CONF_SCREEN_COLORS,
+        CONF_ALBUM_ART_BUDGET,
+        CONF_ALBUM_ART_ZOOM,
+        CONF_ALBUM_ART_MAX_SOURCE,
+        CONF_ALBUM_ART_TEXT,
+    )
+
+    async def async_step_copy_from_panel(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Copy another panel's settings onto this one.
+
+        Always copies the display preferences (timeouts, brightness, sensor
+        interval, colours). Screens, tiles and album art sizing are copied too,
+        but only when the source panel uses the same tile grid as this one -
+        otherwise they are left exactly as they are on this panel. The
+        temperature correction is never copied: it corrects for one sensor's
+        own bias, not a shared preference.
+        """
+        others = self._other_panels()
+        if not others:
+            return self.async_abort(reason="no_other_panels")
+        if user_input is not None:
+            source = self.hass.config_entries.async_get_entry(user_input["source"])
+            if source is None:
+                return self.async_abort(reason="no_other_panels")
+            new_options = dict(self._entry.options)
+            for key in self._COPY_PREFERENCE_KEYS:
+                if key in source.options:
+                    new_options[key] = source.options[key]
+                else:
+                    new_options.pop(key, None)
+            if layout_from_data(source.data) == layout_from_data(self._entry.data):
+                for key in self._COPY_LAYOUT_KEYS:
+                    if key in source.options:
+                        new_options[key] = source.options[key]
+                    else:
+                        new_options.pop(key, None)
+            # CONF_TEMPERATURE_OFFSET is deliberately left untouched, above.
+            return self.async_create_entry(title="", data=new_options)
+
+        options = [
+            {"value": entry.entry_id, "label": entry.title} for entry in others
+        ]
+        schema = vol.Schema(
+            {
+                vol.Required("source"): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=options, mode=selector.SelectSelectorMode.LIST
+                    )
+                )
+            }
+        )
+        return self.async_show_form(step_id="copy_from_panel", data_schema=schema)
 
     async def async_step_manage_background_images(
         self, user_input: dict[str, Any] | None = None
