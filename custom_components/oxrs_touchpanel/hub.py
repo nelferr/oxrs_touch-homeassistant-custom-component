@@ -607,9 +607,7 @@ class OxrsPanel:
     # ── outbound: HA -> panel ────────────────────────────────────────────────
     async def async_push_config(self) -> None:
         """Build and publish the screens config, then seed tile states."""
-        screens: dict[int, list[dict[str, Any]]] = {}
-        for tile in self.tiles:
-            screens.setdefault(tile[CONF_SCREEN], []).append(tile)
+        screens = {tile[CONF_SCREEN] for tile in self.tiles}
 
         # Clean slate: remove every screen we manage (current + previously
         # pushed) so stale/duplicate tiles are dropped and the panel exactly
@@ -628,6 +626,26 @@ class OxrsPanel:
                 ),
             )
         self._pushed_screens = set(screens)
+
+        await mqtt.async_publish(
+            self.hass, topic_conf(self.client_id), json.dumps(self.build_conf())
+        )
+        # Let the panel apply the config before seeding tile states.
+        await asyncio.sleep(1)
+        # Step 1: register background images in panel memory before tiles reference them
+        await self.async_push_images_to_panel()
+        # Step 2: seed tile states (includes backgroundImage.name references)
+        await self.async_seed_state()
+
+    def build_conf(self) -> dict[str, Any]:
+        """The conf/ payload for this panel: display settings and every screen's tiles.
+
+        Also what the visual editor draws, so the editor shows exactly what the
+        panel is sent.
+        """
+        screens: dict[int, list[dict[str, Any]]] = {}
+        for tile in self.tiles:
+            screens.setdefault(tile[CONF_SCREEN], []).append(tile)
 
         # Display settings go first and always: the panel keeps whatever it was
         # last told, so sending defaults explicitly is what makes them defaults.
@@ -730,19 +748,23 @@ class OxrsPanel:
             if screen_color is not None:
                 screen_conf["backgroundColorRgb"] = screen_color
             conf["screens"].append(screen_conf)
-
-        await mqtt.async_publish(
-            self.hass, topic_conf(self.client_id), json.dumps(conf)
-        )
-        # Let the panel apply the config before seeding tile states.
-        await asyncio.sleep(1)
-        # Step 1: register background images in panel memory before tiles reference them
-        await self.async_push_images_to_panel()
-        # Step 2: seed tile states (includes backgroundImage.name references)
-        await self.async_seed_state()
+        return conf
 
     async def async_seed_state(self) -> None:
         """Publish current state for every configured tile in one message."""
+        payload_tiles = self.build_tile_states()
+        if payload_tiles:
+            await mqtt.async_publish(
+                self.hass,
+                topic_cmnd(self.client_id),
+                json.dumps({"tiles": payload_tiles}),
+            )
+
+    def build_tile_states(self) -> list[dict[str, Any]]:
+        """The current state payload of every tile, as the panel is sent it.
+
+        Tiles are in config order; each carries its own "screen" and "tile".
+        """
         payload_tiles: list[dict[str, Any]] = []
         for tile in self.tiles:
             # Handle flexible action tiles with entity binding
@@ -775,13 +797,7 @@ class OxrsPanel:
             if state is not None:
                 _augment_tile_state(self.hass, state, tile, self.library, self._art_target(tile))
                 payload_tiles.append(state)
-        
-        if payload_tiles:
-            await mqtt.async_publish(
-                self.hass,
-                topic_cmnd(self.client_id),
-                json.dumps({"tiles": payload_tiles}),
-            )
+        return payload_tiles
 
     async def async_push_images_to_panel(self) -> None:
         """Send background images AND custom icons actually used on THIS
