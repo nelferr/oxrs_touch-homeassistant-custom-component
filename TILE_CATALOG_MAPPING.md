@@ -129,18 +129,6 @@ key, default and limits, and both the form and the hub read from it.
   value, so the copy is complete, not a merge. Temperature correction is never copied -
   it corrects for one sensor's own bias, not a shared preference. This replaces
   settings on the panel being edited; it never changes the source panel.
-- **Screen layout, a grid view in the dialog (v1.14.5, "Route A" of the visual editor).**
-  Menu item `screen_layout` → pick a screen (those in use, with names and tile counts, plus
-  "New screen (n+1)") → `layout_grid` draws the screen as a markdown table in the step
-  description (one cell per position: number, label and type, a big tile's size on its
-  anchor and "part of n" on the cells it covers) with a position picker below. A tile leads to
-  the `layout_tile` menu (Edit, Remove, Back to the grid; no Edit for an action tile, whose
-  form cannot be built); an empty cell leads to the normal add flow with that position
-  preselected (`_preset_position`), via the screen-name step first when the screen is new.
-  The cell map comes from `grid.screen_map`, which also returns tiles that own no cell (off
-  the grid, or an anchor another tile covers) so they can still be picked and removed.
-  Labels are escaped for the table. The dialog cannot draw clickable cells, so this is
-  orientation plus a picker - the sidebar panel (Route B) is the later step.
 - **Colours cascade tile -> screen -> panel.** Three levels, one firmware key
   (`backgroundColorRgb`) at each. At the screen and tile levels the firmware reads
   pure black as "unset" and inherits from the level above, so black is how a screen
