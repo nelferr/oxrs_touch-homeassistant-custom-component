@@ -37,7 +37,8 @@
           "rename_screen": "Screen name and colour",
           "manage_custom_icons": "Manage custom icons",
           "panel_settings": "Panel display settings",
-          "album_art_settings": "Album art settings"
+          "album_art_settings": "Album art settings",
+          "copy_from_panel": "Copy settings from another panel"
         }
       },
       "add_tile": {
@@ -154,6 +155,13 @@
           "index": "Tile to remove"
         }
       },
+      "copy_from_panel": {
+        "title": "Copy settings from another panel",
+        "description": "Copies the display preferences (timeouts, brightness, sensor interval, background and icon colour) from the panel you choose onto this one. If that panel uses the same tile grid as this one, its screens, tiles and album art size settings are copied too - entity bindings on copied tiles will likely need editing afterward for this panel's own entities. If the grids differ, tiles and album art settings are left exactly as they are here, since a tile's position means a different cell on a different grid. Temperature correction is never copied, since it corrects for one sensor's own bias. This replaces the settings just described on THIS panel and does not change the other one; it cannot be undone.",
+        "data": {
+          "source": "Copy from"
+        }
+      },
       "name_screen": {
         "title": "Name this screen",
         "description": "Give screen {screen} a name, or keep the current one. This appears as the screen's label on the panel.",
@@ -260,6 +268,7 @@
       }
     },
     "abort": {
+      "no_other_panels": "There are no other panels configured to copy from.",
       "no_tiles": "There are no tiles to remove.",
       "screen_full": "That screen has no free tile positions. Choose another screen or remove a tile first.",
       "invalid_tile_style": "Please select a valid tile style.",

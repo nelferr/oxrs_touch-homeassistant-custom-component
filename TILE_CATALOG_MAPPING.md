@@ -116,6 +116,19 @@ key, default and limits, and both the form and the hub read from it.
   electronics and commonly reads a few degrees above the room. Humidity and the CPU
   temperature sensor are not touched. A non-numeric reading is passed through unchanged
   rather than raising.
+- **Copy settings from another panel (v1.14.4)**, a menu option (`config_flow.py`,
+  `async_step_copy_from_panel`) offered only when more than one panel is configured.
+  Always copies the display preferences (`panel_settings`, background colour, icon-on
+  colour) from the chosen panel. Copies screens, tiles and album art sizing too, but
+  ONLY when the source panel has the same grid (`layout_from_data`) as this one - a
+  tile's position number is row-major and means a different cell on a grid with a
+  different column count (see the grid-numbering note above), and a position beyond
+  the target's cell count has no cell at all, which the firmware does not define
+  behaviour for; album art sizing rides with tiles since a size safe on one board's
+  memory may not be on another's. A key the source never set clears the target's own
+  value, so the copy is complete, not a merge. Temperature correction is never copied -
+  it corrects for one sensor's own bias, not a shared preference. This replaces
+  settings on the panel being edited; it never changes the source panel.
 - **Colours cascade tile -> screen -> panel.** Three levels, one firmware key
   (`backgroundColorRgb`) at each. At the screen and tile levels the firmware reads
   pure black as "unset" and inherits from the level above, so black is how a screen
