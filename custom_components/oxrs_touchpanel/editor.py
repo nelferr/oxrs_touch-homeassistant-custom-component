@@ -25,13 +25,11 @@ from pathlib import Path
 from typing import Any
 
 import voluptuous as vol
-import voluptuous_serialize
 
 from homeassistant.components import frontend, panel_custom, websocket_api
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import selector
 
 from .boards import screen_size
@@ -376,6 +374,34 @@ async def _labels(hass: HomeAssistant) -> dict[str, Any]:
     return hass.data[_LABELS]
 
 
+def serialize_schema(schema: vol.Schema) -> list[dict[str, Any]]:
+    """A form schema in the shape Home Assistant's <ha-form> takes.
+
+    What Home Assistant's flows do with a serializer library, done here because that
+    library has changed: voluptuous_serialize is gone from 2026.9 (replaced by
+    probatio), and importing it stopped the integration loading. Only what the tile
+    form uses is handled: keys that are vol.Required / vol.Optional, values that are
+    selectors - which describe themselves for the frontend with Selector.serialize().
+    The fields match HA's own: name, required / optional, default, description.
+    """
+    fields: list[dict[str, Any]] = []
+    for key, value in schema.schema.items():
+        field: dict[str, Any] = {"name": str(key.schema)}
+        field["required" if isinstance(key, vol.Required) else "optional"] = True
+        # A marker without a default holds an "undefined" sentinel, which is not
+        # callable; which object that is differs between voluptuous and probatio.
+        default = getattr(key, "default", None)
+        if callable(default) and type(default).__name__ != "Undefined":
+            field["default"] = default()
+        if getattr(key, "description", None):
+            field["description"] = key.description
+        if not isinstance(value, selector.Selector):
+            raise TypeError(f"field {field['name']} is not a selector")
+        field.update(value.serialize())
+        fields.append(field)
+    return fields
+
+
 def _errors(err: vol.Invalid) -> dict[str, str]:
     errors = getattr(err, "errors", None) or [err]
     return {
@@ -442,7 +468,7 @@ async def ws_tile_form(hass: HomeAssistant, connection: websocket_api.ActiveConn
             "type_label": TILE_TYPES[target.type]["label"],
             "screen": target.screen,
             "position": target.position,
-            "schema": voluptuous_serialize.convert(schema, custom_serializer=cv.custom_serializer),
+            "schema": serialize_schema(schema),
             "sizes": sizes,
             "size": size_value(current if size_value(current) in {s["value"] for s in sizes} else ONE),
             "playlists": target.type == "playlists",
