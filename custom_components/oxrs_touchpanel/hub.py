@@ -637,14 +637,14 @@ class OxrsPanel:
         # Step 2: seed tile states (includes backgroundImage.name references)
         await self.async_seed_state()
 
-    def build_conf(self) -> dict[str, Any]:
+    def build_conf(self, tiles: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         """The conf/ payload for this panel: display settings and every screen's tiles.
 
         Also what the visual editor draws, so the editor shows exactly what the
-        panel is sent.
+        panel is sent. tiles replaces the stored tiles, for previewing unsaved edits.
         """
         screens: dict[int, list[dict[str, Any]]] = {}
-        for tile in self.tiles:
+        for tile in self.tiles if tiles is None else tiles:
             screens.setdefault(tile[CONF_SCREEN], []).append(tile)
 
         # Display settings go first and always: the panel keeps whatever it was
@@ -760,13 +760,14 @@ class OxrsPanel:
                 json.dumps({"tiles": payload_tiles}),
             )
 
-    def build_tile_states(self) -> list[dict[str, Any]]:
+    def build_tile_states(self, tiles: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
         """The current state payload of every tile, as the panel is sent it.
 
-        Tiles are in config order; each carries its own "screen" and "tile".
+        Tiles are in config order; each carries its own "screen" and "tile". tiles
+        replaces the stored tiles, for previewing unsaved edits.
         """
         payload_tiles: list[dict[str, Any]] = []
-        for tile in self.tiles:
+        for tile in self.tiles if tiles is None else tiles:
             # Handle flexible action tiles with entity binding
             if CONF_ACTIONS in tile and tile.get(CONF_ACTIONS):
                 action_entity = tile.get(CONF_ACTION_ENTITY)
