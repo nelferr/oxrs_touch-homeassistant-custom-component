@@ -136,6 +136,18 @@ CONF_SCREEN_COLORS = "screen_colors"
 CONF_ICON_ON_COLOR = "icon_on_color"
 DEFAULT_ICON_ON_COLOR = (91, 190, 91)
 
+# How much to subtract from the panel's reported temperature before it reaches
+# the Temperature sensor, in degrees Celsius. The sensor sits next to the
+# screen and its own electronics, so it commonly reads a few degrees above the
+# room - this is never sent to the panel, only applied to what Home Assistant
+# shows. Humidity is not corrected: raising the temperature used for a
+# humidity reading would call for a dew-point calculation, not a plain offset,
+# and the panel's humidity has not been reported as being off.
+CONF_TEMPERATURE_OFFSET = "temperature_offset"
+DEFAULT_TEMPERATURE_OFFSET = 0.0
+MIN_TEMPERATURE_OFFSET = -20.0
+MAX_TEMPERATURE_OFFSET = 20.0
+
 # A tile is 140px. If artwork cannot be squeezed into the budget even at two
 # colours, the encoder retries smaller rather than giving up outright.
 ALBUM_ART_SIZE = 140

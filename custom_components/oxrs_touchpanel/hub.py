@@ -49,6 +49,7 @@ from .const import (
     CONF_SCREEN_NAMES,
     CONF_SPAN,
     CONF_SUBLABEL_ENTITY_ID,
+    CONF_TEMPERATURE_OFFSET,
     CONF_TILE,
     CONF_TILES,
     CONF_TYPE,
@@ -58,12 +59,15 @@ from .const import (
     DEFAULT_ALBUM_ART_ZOOM,
     DEFAULT_BACKGROUND_COLOR,
     DEFAULT_ICON_ON_COLOR,
+    DEFAULT_TEMPERATURE_OFFSET,
     DOMAIN,
     MANUFACTURER,
     MAX_ALBUM_ART_MAX_SOURCE,
     MAX_ALBUM_ART_ZOOM,
+    MAX_TEMPERATURE_OFFSET,
     MIN_ALBUM_ART_MAX_SOURCE,
     MIN_ALBUM_ART_ZOOM,
+    MIN_TEMPERATURE_OFFSET,
     MODEL,
     PANEL_SETTINGS,
     signal_available,
@@ -337,6 +341,29 @@ class OxrsPanel:
         except (TypeError, ValueError):
             value = default
         return max(low, min(high, value))
+
+    def _float_option(self, key: str, default: float, low: float, high: float) -> float:
+        """A float option, clamped to its range, falling back to its default."""
+        try:
+            value = float(self.entry.options.get(key, default))
+        except (TypeError, ValueError):
+            value = default
+        return max(low, min(high, value))
+
+    @property
+    def temperature_offset(self) -> float:
+        """Degrees Celsius subtracted from the panel's reported temperature.
+
+        The panel's sensor sits next to its own screen and electronics, so it
+        commonly reads warmer than the room around it; this is never sent to
+        the panel, only applied to the Temperature sensor Home Assistant shows.
+        """
+        return self._float_option(
+            CONF_TEMPERATURE_OFFSET,
+            DEFAULT_TEMPERATURE_OFFSET,
+            MIN_TEMPERATURE_OFFSET,
+            MAX_TEMPERATURE_OFFSET,
+        )
 
     @property
     def album_art_zoom(self) -> int:
@@ -1181,7 +1208,16 @@ class OxrsPanel:
         if not isinstance(data, dict):
             return
         if "temperature" in data:
-            self.temperature = data["temperature"]
+            raw = data["temperature"]
+            # Corrected here, not on the panel: a non-numeric reading (seen on some
+            # firmware builds while the sensor warms up) is passed through as-is
+            # rather than raising, matching how this field has always been handled.
+            if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+                # round(): plain float subtraction (34.7 - 6) leaves trailing binary
+                # noise (28.700000000000003) that would otherwise reach the sensor.
+                self.temperature = round(raw - self.temperature_offset, 2)
+            else:
+                self.temperature = raw
         if "humidity" in data:
             self.humidity = data["humidity"]
         if "esp32Temp" in data:

@@ -109,6 +109,13 @@ key, default and limits, and both the form and the hub read from it.
   resolves it to its default, also black, so choosing black and choosing nothing are
   the same. The firmware casts each channel to a byte, so an out-of-range number
   would wrap round to a different colour; the hub clamps to 0-255 first.
+- **Temperature correction (v1.14.3)** is not a firmware setting - the panel is never told
+  about it. `CONF_TEMPERATURE_OFFSET`, degrees Celsius, default 0, range -20 to +20, step
+  0.5. Subtracted from `tele.temperature` before it reaches the Temperature sensor
+  (`hub.py`, `_on_tele`), because the panel's sensor sits next to its own screen and
+  electronics and commonly reads a few degrees above the room. Humidity and the CPU
+  temperature sensor are not touched. A non-numeric reading is passed through unchanged
+  rather than raising.
 - **Colours cascade tile -> screen -> panel.** Three levels, one firmware key
   (`backgroundColorRgb`) at each. At the screen and tile levels the firmware reads
   pure black as "unset" and inherits from the level above, so black is how a screen

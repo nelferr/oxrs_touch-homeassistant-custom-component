@@ -242,6 +242,7 @@
           "tileBrightnessOn": "Tile Brightness ON state (%)",
           "tileBrightnessOff": "Tile Brightness OFF state (%)",
           "climateUpdateSeconds": "Sensor Update Interval (seconds)",
+          "temperature_offset": "Temperature correction (°C)",
           "background_color": "Background Color",
           "icon_on_color": "Icon colour when on"
         },
@@ -252,6 +253,7 @@
           "tileBrightnessOn": "Brightness of tiles in their on state (75 to 100).",
           "tileBrightnessOff": "Brightness of tiles in their off state (0 to 25).",
           "climateUpdateSeconds": "How often the panel reads and reports its temperature and humidity sensors (0 stops the reports, up to 86400).",
+          "temperature_offset": "Subtracted from the panel's reported temperature before it reaches the Temperature sensor - for example 6 if the panel reads about 6°C warmer than the room. Use a negative number if it reads too low. Does not change humidity, and is not sent to the panel.",
           "background_color": "Colour of every screen and tile background (default black). A screen or tile with its own colour keeps it.",
           "icon_on_color": "Colour of icons on tiles that are on (default light green). Black is read by the firmware as unset and gives the default."
         }

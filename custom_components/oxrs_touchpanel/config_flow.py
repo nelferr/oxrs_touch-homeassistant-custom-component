@@ -68,6 +68,7 @@ from .const import (
     CONF_SCREEN_NAMES,
     CONF_SPAN,
     CONF_SUBLABEL_ENTITY_ID,
+    CONF_TEMPERATURE_OFFSET,
     CONF_TILE,
     CONF_TILES,
     CONF_TYPE,
@@ -77,6 +78,7 @@ from .const import (
     DEFAULT_ALBUM_ART_ZOOM,
     DEFAULT_BACKGROUND_COLOR,
     DEFAULT_ICON_ON_COLOR,
+    DEFAULT_TEMPERATURE_OFFSET,
     DOMAIN,
     FIELD_LARGER,
     LIBRARY_DATA_KEY,
@@ -84,9 +86,11 @@ from .const import (
     MAX_ALBUM_ART_MAX_SOURCE,
     MAX_ALBUM_ART_ZOOM,
     MAX_PLAYLISTS,
+    MAX_TEMPERATURE_OFFSET,
     MIN_ALBUM_ART_BUDGET,
     MIN_ALBUM_ART_MAX_SOURCE,
     MIN_ALBUM_ART_ZOOM,
+    MIN_TEMPERATURE_OFFSET,
     PANEL_SETTINGS,
 )
 from .library import (
@@ -406,7 +410,8 @@ class OxrsOptionsFlow(OptionsFlow):
         offers, and each is pre-filled with the firmware default. The numeric
         fields are built from PANEL_SETTINGS so their limits are the ones the
         hub clamps to; the background colour uses HA's colour picker rather
-        than three separate 0-255 numbers.
+        than three separate 0-255 numbers. Temperature correction is not a
+        firmware setting - it is applied here, to the Temperature sensor only.
         """
         stored = self._entry.options.get(CONF_PANEL_SETTINGS) or {}
         if user_input is not None:
@@ -414,6 +419,8 @@ class OxrsOptionsFlow(OptionsFlow):
             options[CONF_PANEL_SETTINGS] = {
                 key: int(user_input[key]) for key in PANEL_SETTINGS if key in user_input
             }
+            if CONF_TEMPERATURE_OFFSET in user_input:
+                options[CONF_TEMPERATURE_OFFSET] = float(user_input[CONF_TEMPERATURE_OFFSET])
             for key in (CONF_BACKGROUND_COLOR, CONF_ICON_ON_COLOR):
                 if key in user_input:
                     options[key] = [int(c) for c in user_input[key]]
@@ -435,6 +442,22 @@ class OxrsOptionsFlow(OptionsFlow):
             )
             for key, (default, low, high) in PANEL_SETTINGS.items()
         }
+        fields[
+            vol.Required(
+                CONF_TEMPERATURE_OFFSET,
+                default=self._entry.options.get(
+                    CONF_TEMPERATURE_OFFSET, DEFAULT_TEMPERATURE_OFFSET
+                ),
+            )
+        ] = selector.NumberSelector(
+            selector.NumberSelectorConfig(
+                min=MIN_TEMPERATURE_OFFSET,
+                max=MAX_TEMPERATURE_OFFSET,
+                step=0.5,
+                mode="box",
+                unit_of_measurement="°C",
+            )
+        )
         for key, default in (
             (CONF_BACKGROUND_COLOR, DEFAULT_BACKGROUND_COLOR),
             (CONF_ICON_ON_COLOR, DEFAULT_ICON_ON_COLOR),
