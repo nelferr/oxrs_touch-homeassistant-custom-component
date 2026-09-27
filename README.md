@@ -38,6 +38,20 @@ Then, either way:
    - **MQTT Topic**: Base topic for MQTT communication (typically `oxrs/[device-id]`)
    - **Device Name**: A friendly name for your panel
 
+## The OXRS panels page
+
+Once a panel is set up, an **OXRS panels** entry appears in the sidebar (for
+administrators). It draws each panel's screens as the panel shows them - icons, colours,
+on/off state, labels and album art - and lets you change them:
+
+- Swipe, or use the arrows, to move between screens. The last screen is a new, empty one.
+- Tap an empty space to add a tile there, choosing its type, entity, label, icon and size.
+- Tap a tile to edit or remove it.
+
+Changes are staged until you press **Apply to panel**, which sends them to the panel in
+one go (or **Discard** to drop them). Panel settings, background images and custom icons
+are still set in the panel's **Configure** dialog.
+
 ## Support
 
 - **Issues & Bug Reports** — [GitHub Issues](https://github.com/nelferr/oxrs_touch-homeassistant-custom-component/issues)

@@ -18,6 +18,7 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.loader import async_get_integration
 
 from .const import (
     CONF_BACKGROUND_IMAGES,
@@ -26,6 +27,7 @@ from .const import (
     LIBRARY_DATA_KEY,
     PLATFORMS,
 )
+from .editor import async_remove_editor_panel, async_setup_editor
 from .hub import OxrsPanel
 from .library import SharedMediaLibrary
 from .retained import async_clear_retained
@@ -104,6 +106,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = panel
 
+    # The visual editor is extra: if it cannot be set up the panel still works.
+    try:
+        integration = await async_get_integration(hass, DOMAIN)
+        await async_setup_editor(hass, str(integration.version))
+    except Exception:  # noqa: BLE001
+        _LOGGER.exception("Could not set up the OXRS panels editor page")
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
@@ -133,7 +142,14 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
     Runs after the entry has been unloaded. A failure here must never stop the
     removal, so it is logged and swallowed.
+
+    The editor page leaves the sidebar with the last panel. Not on unload: every
+    options save reloads the entry, and the page would vanish from under the user.
     """
+    if not any(
+        other.entry_id != entry.entry_id for other in hass.config_entries.async_entries(DOMAIN)
+    ):
+        async_remove_editor_panel(hass)
     client_id = entry.data.get(CONF_CLIENT_ID)
     if not client_id:
         return

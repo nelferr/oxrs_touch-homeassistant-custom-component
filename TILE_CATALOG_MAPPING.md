@@ -129,18 +129,6 @@ key, default and limits, and both the form and the hub read from it.
   value, so the copy is complete, not a merge. Temperature correction is never copied -
   it corrects for one sensor's own bias, not a shared preference. This replaces
   settings on the panel being edited; it never changes the source panel.
-- **Screen layout, a grid view in the dialog (v1.14.5, "Route A" of the visual editor).**
-  Menu item `screen_layout` → pick a screen (those in use, with names and tile counts, plus
-  "New screen (n+1)") → `layout_grid` draws the screen as a markdown table in the step
-  description (one cell per position: number, label and type, a big tile's size on its
-  anchor and "part of n" on the cells it covers) with a position picker below. A tile leads to
-  the `layout_tile` menu (Edit, Remove, Back to the grid; no Edit for an action tile, whose
-  form cannot be built); an empty cell leads to the normal add flow with that position
-  preselected (`_preset_position`), via the screen-name step first when the screen is new.
-  The cell map comes from `grid.screen_map`, which also returns tiles that own no cell (off
-  the grid, or an anchor another tile covers) so they can still be picked and removed.
-  Labels are escaped for the table. The dialog cannot draw clickable cells, so this is
-  orientation plus a picker - the sidebar panel (Route B) is the later step.
 - **Colours cascade tile -> screen -> panel.** Three levels, one firmware key
   (`backgroundColorRgb`) at each. At the screen and tile levels the firmware reads
   pure black as "unset" and inherits from the level above, so black is how a screen
@@ -894,3 +882,63 @@ Firmware features with no ESPControl equivalent, worth considering anyway:
    Art and Camera as experiments.
 6. **Code-entry cards** — Alarm and Lock keypad variants, once the plaintext
    `keyCode` handling has been reviewed.
+
+### The OXRS panels page (v2.0.0)
+
+A sidebar page, **OXRS panels** (admin only), that draws every screen of every panel the
+way the panel shows it, and adds, edits and removes tiles. It replaces the v1.14.5 grid
+view, which was removed.
+
+- **Files.** `editor.py` (the page's registration and websocket commands), `drafts.py`
+  (checking a draft before it is saved), `frontend/editor.js` (the page: a plain web
+  component, no build step, no outside libraries) and `frontend/icons/` (the firmware's
+  18 built-in icons and its six control arrows, decoded from its LVGL image arrays in
+  `src/resources/ios_*.c`, 32-bit section, B G R A). `_thermostat` has no file: the
+  firmware's is a 1 x 1 blank the tile draws its dial over.
+- **Registration.** On the first panel's setup: a static path `/oxrs_touchpanel_static`
+  serving `frontend/` (uncached; the module URL carries the integration version instead),
+  the websocket commands, and `panel_custom.async_register_panel` at `/oxrs-panels`. The
+  sidebar entry goes when the last panel is DELETED (`async_remove_entry`), not on unload:
+  every options save reloads the entry, and the page would vanish from under the user. A
+  failure setting the page up is logged and never stops the panel.
+- **What is drawn is what is sent.** The hub builds its payloads in `build_conf(tiles)` and
+  `build_tile_states(tiles)`; `async_push_config` / `async_seed_state` publish them, and the
+  page's `panels` / `preview` commands return them - for the stored tiles, or a draft's. The
+  MQTT the hub publishes was checked byte-identical to v1.14.4 across two boards.
+- **Look, from the firmware source.** Geometry as for album art (cell = width // cols by
+  (height - 33) // rows, tile = cells x span less 10 px). The tile's white light is the
+  image button's own background at the off / on brightness (`255 * pct / 100`), so the
+  background image and content sit above it. The icon (60 x 60, LVGL imgbtn left image) sits
+  at the top-left, recoloured white, or the icon-on colour when on (every icon is
+  recoloured at full opacity, so its stored colour does not matter - two are stored black).
+  Label and sub-label bottom-left in the default 14 px font (sub-label at 70 %), black when
+  on. `number` (indicators): 50 px value top-left, units and sub-value at 20 px. Up/down,
+  previous/next and left/right controls take the right half, top and bottom quarters.
+  Non-empty `text` replaces the icon (20 px, top-left). Album art is not kept after it is
+  sent, so the player's own cover (`entity_picture`) stands in; library images are drawn at
+  their size times the zoom, centred. The footer shows the screen label.
+- **Editing.** Tap an empty cell: choose a type (as the dialog offers them), then a form.
+  Tap a tile: Edit or Remove (an old action tile: Remove only). The form is the dialog's
+  own: `tile_form` builds `OxrsOptionsFlow._tile_details_schema` for the panel (position
+  and "larger" dropped, the background image choice added), serialized with
+  `voluptuous_serialize` + `cv.custom_serializer` and rendered with HA's `<ha-form>`
+  (loaded via the card helpers if not yet defined). Sizes are chips of every size that
+  fits at the cell (`fitting_sizes`, full screen only on an empty screen, "experimental"
+  for untested styles). `build_tile` validates with the same schema and builds the tile
+  with the dialog's `_apply_details_input`; a playlists tile asks which playlists in a
+  second step. Checked: for a light with size and image, an indicator and a playlists
+  tile, the page's tile equals the tile the real dialog saves.
+- **Staged, then applied once.** Changes build a draft drawn as a preview; Remove has an
+  Undo; nothing reaches the panel until **Apply to panel** (or **Discard**). `apply` refuses
+  when the stored tiles' fingerprint changed since the page loaded them (an edit in the
+  dialog meanwhile), and when `drafts.draft_problems` finds a new or changed tile the
+  dialog could not have made (bad screen / position / type / entity / size) or an overlap
+  involving one; untouched tiles pass as they are, so an old action tile or a tile off the
+  grid survives. Saving writes only `tiles` in the options; the entry reloads and the
+  panel is sent the whole config once.
+- **Live.** The page re-reads when an entity a tile uses changes (at most once a second),
+  keeping an open form as it is. The last slide is a new, empty screen; adding a tile
+  there creates it. Screens are still named and coloured in the dialog.
+- **Not yet:** moving a tile by dragging, renaming/recolouring screens on the page, and
+  the rarer settings (panel settings, images, icons), which stay in the dialog.
+

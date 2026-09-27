@@ -101,39 +101,6 @@ def occupied(
     return taken
 
 
-def screen_map(
-    tiles: list[dict[str, Any]], screen: int, cols: int, rows: int
-) -> tuple[dict[int, int], list[int]]:
-    """Which tile covers each position of a screen, for drawing the screen as a grid.
-
-    Returns (cells, unplaced): cells maps a position to the index in `tiles` of the
-    tile covering it, at its clipped size. unplaced lists the indexes of tiles on
-    this screen that own no cell - a position off the grid (a hand-edited or copied
-    config), or an anchor another tile already covers (overlaps the flows prevent,
-    but an old config might hold; the first tile listed keeps a contested cell) -
-    so that every tile can still be shown, edited and removed.
-    """
-    cells: dict[int, int] = {}
-    on_screen: list[int] = []
-    for index, tile in enumerate(tiles):
-        if tile.get(CONF_SCREEN) != screen:
-            continue
-        on_screen.append(index)
-        position = tile.get(CONF_TILE)
-        if (
-            not isinstance(position, int)
-            or isinstance(position, bool)
-            or not 1 <= position <= cols * rows
-        ):
-            continue
-        for cell in sorted(covered(position, tile_span(tile.get(CONF_SPAN)), cols, rows)):
-            cells.setdefault(cell, index)
-    # Placed means picked by its own position: a tile whose anchor another tile
-    # covers cannot be reached that way, even if it still owns other cells.
-    placed = {index for position, index in cells.items() if tiles[index].get(CONF_TILE) == position}
-    return cells, [index for index in on_screen if index not in placed]
-
-
 def free_anchors(taken: set[int], cols: int, rows: int) -> list[int]:
     """Positions where at least a 1 x 1 tile fits."""
     return [p for p in range(1, cols * rows + 1) if p not in taken]
