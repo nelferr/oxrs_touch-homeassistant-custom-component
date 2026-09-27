@@ -30,6 +30,7 @@
       "init": {
         "title": "OXRS Touch Panel",
         "menu_options": {
+          "screen_layout": "Screen layout (grid view)",
           "add_tile": "Add a tile",
           "edit_tile": "Edit a tile",
           "remove_tile": "Remove a tile",
@@ -39,6 +40,29 @@
           "panel_settings": "Panel display settings",
           "album_art_settings": "Album art settings",
           "copy_from_panel": "Copy settings from another panel"
+        }
+      },
+      "screen_layout": {
+        "title": "Screen layout",
+        "description": "Choose a screen to see its tiles laid out as they are on the panel.",
+        "data": {
+          "screen": "Screen"
+        }
+      },
+      "layout_grid": {
+        "title": "{screen_name}",
+        "description": "{grid}\n\nPick a position below: a tile to edit or remove it, or an empty one to add a tile there.",
+        "data": {
+          "position": "Position"
+        }
+      },
+      "layout_tile": {
+        "title": "{tile}",
+        "description": "Position {position} on {screen_name}.",
+        "menu_options": {
+          "layout_edit": "Edit this tile",
+          "layout_remove": "Remove this tile",
+          "layout_grid": "Back to the grid"
         }
       },
       "add_tile": {
