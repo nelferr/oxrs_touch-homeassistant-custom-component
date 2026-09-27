@@ -920,8 +920,9 @@ view, which was removed.
 - **Editing.** Tap an empty cell: choose a type (as the dialog offers them), then a form.
   Tap a tile: Edit or Remove (an old action tile: Remove only). The form is the dialog's
   own: `tile_form` builds `OxrsOptionsFlow._tile_details_schema` for the panel (position
-  and "larger" dropped, the background image choice added), serialized with
-  `voluptuous_serialize` + `cv.custom_serializer` and rendered with HA's `<ha-form>`
+  and "larger" dropped, the background image choice added), serialized by
+  `editor.serialize_schema` (each selector's own `serialize()`; NOT voluptuous_serialize,
+  which HA 2026.9 no longer ships - v2.0.0 failed to load on it) and rendered with HA's `<ha-form>`
   (loaded via the card helpers if not yet defined). Sizes are chips of every size that
   fits at the cell (`fitting_sizes`, full screen only on an empty screen, "experimental"
   for untested styles). `build_tile` validates with the same schema and builds the tile
