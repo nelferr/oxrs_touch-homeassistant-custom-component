@@ -35,11 +35,13 @@ from .boards import (
 from .colors import BLACK, normalize_rgb
 from .grid import (
     ONE,
+    clipped,
     free_anchors,
     is_size_tested,
     larger_sizes,
     occupied,
     parse_size_value,
+    screen_map,
     size_label,
     size_value,
     tile_span,
@@ -294,6 +296,12 @@ class OxrsOptionsFlow(OptionsFlow):
         # Playlists fetched from Music Assistant for the tile being added, kept
         # so a validation error re-shows the form without fetching again.
         self._playlist_choices: list[dict[str, str]] | None = None
+        # The screen shown by the grid view, and the tile picked on it.
+        self._layout_screen: int = 1
+        self._layout_index: int = -1
+        # A position picked on the grid view's empty cell, preselected when the
+        # add form opens. None when adding from the menu.
+        self._preset_position: int | None = None
 
     def _grid(self) -> tuple[int, int]:
         """(columns, rows) of THIS panel's screens."""
@@ -396,6 +404,7 @@ class OxrsOptionsFlow(OptionsFlow):
     ) -> ConfigFlowResult:
         """Show the tile-management menu."""
         menu_options = [
+            "screen_layout",
             "add_tile",
             "edit_tile",
             "remove_tile",
@@ -557,6 +566,215 @@ class OxrsOptionsFlow(OptionsFlow):
             },
         )
 
+    # ── Grid view ─────────────────────────────────────────────────────────────
+    # A screen drawn as a table in the dialog text, with a position picker under
+    # it: a tile leads to Edit / Remove, an empty cell to the add flow with that
+    # position preselected. The dialog cannot draw clickable cells, so the table
+    # is for orientation and the picker does the choosing.
+
+    def _screen_label(self, screen: int) -> str:
+        return self._screen_names.get(str(screen), f"Screen {screen}")
+
+    def _screens_in_use(self) -> list[int]:
+        return sorted(
+            {
+                t[CONF_SCREEN]
+                for t in self._tiles
+                if isinstance(t.get(CONF_SCREEN), int) and not isinstance(t.get(CONF_SCREEN), bool)
+            }
+        )
+
+    @staticmethod
+    def _tile_name(tile: dict[str, Any]) -> str:
+        """What a tile is called in the grid view: its label and type, or just the type."""
+        definition = TILE_TYPES.get(tile.get(CONF_TYPE))
+        kind = definition["label"] if definition else "Action tile"
+        label = str(tile.get(CONF_LABEL) or "").strip()
+        return f"{label} ({kind})" if label else kind
+
+    @staticmethod
+    def _md_text(text: str) -> str:
+        """text made safe for a markdown table cell: one line, no table or emphasis syntax."""
+        text = " ".join(str(text).split())
+        for char in "\\|*_`[]<>#":
+            text = text.replace(char, "\\" + char)
+        return text
+
+    def _tile_size_text(self, tile: dict[str, Any]) -> str:
+        cols, rows = self._grid()
+        position = tile.get(CONF_TILE)
+        if not isinstance(position, int) or not 1 <= position <= cols * rows:
+            return ""
+        w, h = clipped(position, tile_span(tile.get(CONF_SPAN)), cols, rows)
+        return "" if (w, h) == ONE else f"{w}×{h}"
+
+    def _grid_markdown(self, screen: int) -> tuple[str, dict[int, int], list[int]]:
+        """The screen as a markdown table, plus the cell map it was drawn from."""
+        cols, rows = self._grid()
+        cells, unplaced = screen_map(self._tiles, screen, cols, rows)
+        lines = [
+            "| " + " | ".join(f"Column {c + 1}" for c in range(cols)) + " |",
+            "|" + "---|" * cols,
+        ]
+        for r in range(rows):
+            row = []
+            for c in range(cols):
+                position = r * cols + c + 1
+                index = cells.get(position)
+                if index is None:
+                    row.append(f"**{position}** · empty")
+                    continue
+                tile = self._tiles[index]
+                if tile.get(CONF_TILE) == position:
+                    size = self._tile_size_text(tile)
+                    text = f"**{position}** {self._md_text(self._tile_name(tile))}"
+                    row.append(f"{text} · {size}" if size else text)
+                else:
+                    row.append(f"*↖ part of {tile.get(CONF_TILE)}*")
+            lines.append("| " + " | ".join(row) + " |")
+        text = "\n".join(lines)
+        if unplaced:
+            extra = ", ".join(
+                f"{self._md_text(self._tile_name(self._tiles[i]))} (position {self._tiles[i].get(CONF_TILE)})"
+                for i in unplaced
+            )
+            text += f"\n\nNot shown on the grid: {extra}."
+        return text, cells, unplaced
+
+    async def async_step_screen_layout(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Choose the screen to show as a grid: one in use, or the next new one."""
+        screens = self._screens_in_use()
+        new_screen = (screens[-1] + 1) if screens else 1
+        if user_input is not None:
+            self._layout_screen = int(user_input["screen"])
+            return await self.async_step_layout_grid()
+
+        counts = {s: sum(1 for t in self._tiles if t.get(CONF_SCREEN) == s) for s in screens}
+        options = [
+            {
+                "value": str(s),
+                "label": f"{self._screen_label(s)} · {counts[s]} tile{'s' if counts[s] != 1 else ''}",
+            }
+            for s in screens
+        ]
+        options.append({"value": str(new_screen), "label": f"New screen ({new_screen})"})
+        schema = vol.Schema(
+            {
+                vol.Required("screen", default=options[0]["value"]): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=options, mode=selector.SelectSelectorMode.LIST
+                    )
+                )
+            }
+        )
+        return self.async_show_form(step_id="screen_layout", data_schema=schema)
+
+    async def async_step_layout_grid(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """The chosen screen as a grid; pick a tile to change or a cell to fill."""
+        screen = self._layout_screen
+        cols, rows = self._grid()
+        grid_text, cells, unplaced = self._grid_markdown(screen)
+
+        if user_input is not None:
+            choice = str(user_input.get("position", ""))
+            if choice.startswith("t") and choice[1:].isdigit():
+                index = int(choice[1:])
+                if 0 <= index < len(self._tiles) and self._tiles[index].get(CONF_SCREEN) == screen:
+                    self._layout_index = index
+                    return await self.async_step_layout_tile()
+            if choice.startswith("p") and choice[1:].isdigit():
+                position = int(choice[1:])
+                if 1 <= position <= cols * rows and position not in cells:
+                    new_screen = screen not in self._screens_in_use()
+                    self._new_screen = screen
+                    self._preset_position = position
+                    if new_screen:
+                        return await self.async_step_name_screen()
+                    return await self.async_step_add_tile_type()
+            # A stale choice (the dialog was left open while the config changed)
+            # just redraws the grid.
+
+        options: list[dict[str, str]] = []
+        for position in range(1, cols * rows + 1):
+            index = cells.get(position)
+            if index is None:
+                options.append({"value": f"p{position}", "label": f"{position} · Empty - add a tile here"})
+            elif self._tiles[index].get(CONF_TILE) == position:
+                tile = self._tiles[index]
+                size = self._tile_size_text(tile)
+                label = f"{position} · {self._tile_name(tile)}"
+                options.append({"value": f"t{index}", "label": f"{label} · {size}" if size else label})
+        for index in unplaced:
+            tile = self._tiles[index]
+            options.append(
+                {
+                    "value": f"t{index}",
+                    "label": f"{self._tile_name(tile)} · not on the grid (position {tile.get(CONF_TILE)})",
+                }
+            )
+        schema = vol.Schema(
+            {
+                vol.Required("position"): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=options, mode=selector.SelectSelectorMode.DROPDOWN
+                    )
+                )
+            }
+        )
+        return self.async_show_form(
+            step_id="layout_grid",
+            data_schema=schema,
+            description_placeholders={
+                "screen_name": self._screen_label(screen),
+                "grid": grid_text,
+            },
+        )
+
+    async def async_step_layout_tile(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """What to do with the tile picked on the grid."""
+        tile = self._tiles[self._layout_index]
+        menu_options = ["layout_remove", "layout_grid"]
+        # The edit form is built from the tile type's definition, so a tile with
+        # no known type (the old action tiles) can be removed but not edited.
+        if tile.get(CONF_TYPE) in TILE_TYPES:
+            menu_options.insert(0, "layout_edit")
+        return self.async_show_menu(
+            step_id="layout_tile",
+            menu_options=menu_options,
+            description_placeholders={
+                "tile": self._tile_name(tile),
+                "position": str(tile.get(CONF_TILE)),
+                "screen_name": self._screen_label(self._layout_screen),
+            },
+        )
+
+    async def async_step_layout_edit(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Edit the picked tile, through the same steps as the Edit a tile menu."""
+        tile = self._tiles[self._layout_index]
+        self._edit_index = self._layout_index
+        self._new_tile_config = dict(tile)
+        self._new_type = tile[CONF_TYPE]
+        self._new_screen = tile[CONF_SCREEN]
+        self._playlist_choices = None
+        return await self.async_step_edit_tile_details()
+
+    async def async_step_layout_remove(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Remove the picked tile."""
+        del self._tiles[self._layout_index]
+        new_options = dict(self._entry.options)
+        new_options[CONF_TILES] = self._tiles
+        return self.async_create_entry(title="", data=new_options)
+
     async def async_step_add_tile(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -564,6 +782,7 @@ class OxrsOptionsFlow(OptionsFlow):
         try:
             _LOGGER.debug(f"async_step_add_tile called with input: {user_input}")
             
+            self._preset_position = None
             if user_input is not None:
                 self._new_screen = int(user_input[CONF_SCREEN])
                 _LOGGER.debug(f"User chose screen: {self._new_screen}")
@@ -793,12 +1012,14 @@ class OxrsOptionsFlow(OptionsFlow):
         free: list[int],
         current: dict[str, Any] | None = None,
         larger: bool = False,
+        position: int | None = None,
     ) -> vol.Schema:
         """The details form for a tile: position, entity, label, icon and extras.
 
         Used for adding (current is None, everything starts blank) and for
         editing (current is the tile being edited, and every field starts on its
-        present value). One builder, so the two forms cannot disagree.
+        present value). One builder, so the two forms cannot disagree. position
+        preselects a free position when adding (from the grid view).
         """
         definition = TILE_TYPES[tile_type]
         editing = current is not None
@@ -864,7 +1085,11 @@ class OxrsOptionsFlow(OptionsFlow):
         schema_dict: dict[Any, Any] = {
             vol.Required(
                 CONF_TILE,
-                default=str(current[CONF_TILE] if editing else free[0]),
+                default=str(
+                    current[CONF_TILE]
+                    if editing
+                    else (position if position in free else free[0])
+                ),
             ): selector.SelectSelector(
                 selector.SelectSelectorConfig(
                     options=[
@@ -987,7 +1212,9 @@ class OxrsOptionsFlow(OptionsFlow):
             _LOGGER.debug("Showing tile details form")
             return self.async_show_form(
                 step_id="add_tile_details",
-                data_schema=self._tile_details_schema(self._new_type, free),
+                data_schema=self._tile_details_schema(
+                    self._new_type, free, position=self._preset_position
+                ),
                 description_placeholders=placeholders,
             )
         except Exception as err:
