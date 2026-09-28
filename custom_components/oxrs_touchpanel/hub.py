@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 from homeassistant.components import mqtt
@@ -70,6 +71,7 @@ from .const import (
     MIN_TEMPERATURE_OFFSET,
     MODEL,
     PANEL_SETTINGS,
+    SETTINGS_KEYS,
     signal_available,
     signal_tele,
     topic_adopt,
@@ -289,7 +291,11 @@ class OxrsPanel:
         firmware's limits, so an option saved by an older version, or edited by
         hand, can never send the panel something it would reject.
         """
-        stored = self.entry.options.get(CONF_PANEL_SETTINGS) or {}
+        return self._panel_settings_of(self.entry.options)
+
+    @staticmethod
+    def _panel_settings_of(options: Mapping[str, Any]) -> dict[str, int]:
+        stored = options.get(CONF_PANEL_SETTINGS) or {}
         settings: dict[str, int] = {}
         for key, (default, low, high) in PANEL_SETTINGS.items():
             try:
@@ -318,7 +324,11 @@ class OxrsPanel:
         would wrap round to a different colour rather than being rejected.
         Clamping here is what stops a stored 300 becoming 44.
         """
-        channels = normalize_rgb(self.entry.options.get(CONF_BACKGROUND_COLOR))
+        return self._background_color_of(self.entry.options)
+
+    @staticmethod
+    def _background_color_of(options: Mapping[str, Any]) -> dict[str, int]:
+        channels = normalize_rgb(options.get(CONF_BACKGROUND_COLOR))
         return rgb_payload(channels or DEFAULT_BACKGROUND_COLOR)
 
     @property
@@ -329,7 +339,11 @@ class OxrsPanel:
         a stored black is sent as that default instead - the payload then says
         what the panel will actually show.
         """
-        channels = normalize_rgb(self.entry.options.get(CONF_ICON_ON_COLOR))
+        return self._icon_on_color_of(self.entry.options)
+
+    @staticmethod
+    def _icon_on_color_of(options: Mapping[str, Any]) -> dict[str, int]:
+        channels = normalize_rgb(options.get(CONF_ICON_ON_COLOR))
         if channels is None or channels == BLACK:
             channels = DEFAULT_ICON_ON_COLOR
         return rgb_payload(channels)
@@ -643,13 +657,21 @@ class OxrsPanel:
         *,
         screen_names: dict[str, str] | None = None,
         screen_colors: dict[str, Any] | None = None,
+        settings: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """The conf/ payload for this panel: display settings and every screen's tiles.
 
         Also what the visual editor draws, so the editor shows exactly what the
         panel is sent. tiles, screen_names and screen_colors replace the stored ones,
-        for previewing unsaved edits.
+        for previewing unsaved edits; settings, when given, is the panel settings
+        part of the options (const.SETTINGS_KEYS), replacing the stored one.
         """
+        options = self.entry.options
+        if settings is not None:
+            options = {
+                **{k: v for k, v in options.items() if k not in SETTINGS_KEYS},
+                **settings,
+            }
         screens: dict[int, list[dict[str, Any]]] = {}
         for tile in self.tiles if tiles is None else tiles:
             screens.setdefault(tile[CONF_SCREEN], []).append(tile)
@@ -657,9 +679,9 @@ class OxrsPanel:
         # Display settings go first and always: the panel keeps whatever it was
         # last told, so sending defaults explicitly is what makes them defaults.
         conf: dict[str, Any] = {
-            **self.panel_settings,
-            "backgroundColorRgb": self.background_color,
-            "iconOnColorRgb": self.icon_on_color,
+            **self._panel_settings_of(options),
+            "backgroundColorRgb": self._background_color_of(options),
+            "iconOnColorRgb": self._icon_on_color_of(options),
             "screens": [],
         }
         layout = self.layout

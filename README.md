@@ -54,10 +54,13 @@ on/off state, labels and album art - and lets you change them:
   where it should go. Moving a tile to the last, new screen creates that screen; a screen
   left without tiles is taken off the panel.
 - Tap a screen's name to rename it or give it its own background colour.
+- Tap **Panel settings** for the panel's timeouts, tile brightness, sensor interval,
+  temperature correction, background colour and icon colour. The preview shows the
+  colours and brightness before you apply them.
 
 Changes are staged until you press **Apply to panel**, which sends them to the panel in
-one go (or **Discard** to drop them). Panel settings, background images and custom icons
-are still set in the panel's **Configure** dialog.
+one go (or **Discard** to drop them). Album art settings, background images and custom
+icons are still set in the panel's **Configure** dialog.
 
 ## Support
 

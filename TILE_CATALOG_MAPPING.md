@@ -968,6 +968,18 @@ view, which was removed.
   covers tiles, names and colours, so a rename in the dialog meanwhile refuses the apply.
   Invalid names/colours are refused (`screens_problems`), except values unchanged from
   what is stored.
-- **Not yet:** the rarer settings (panel settings, images, icons), which stay in the
-  dialog.
+- **Panel settings on the page (v2.3.0).** "Panel settings" in the panel's info line opens
+  the dialog's own "Panel display settings" form: `OxrsOptionsFlow._panel_settings_schema`
+  (split out of `async_step_panel_settings`, which now calls it) via
+  `editor/settings_form`, labels from the step's translations. `editor/build_settings`
+  validates with the same schema and stores with the dialog's `_panel_settings_options`,
+  so the page and the dialog save identically. The draft carries `settings`: the options
+  in `const.SETTINGS_KEYS` (panel_settings, temperature_offset, background_color,
+  icon_on_color) in their stored shape. The preview draws them
+  (`hub.build_conf(..., settings=)`, which overlays them on the stored options for
+  the display settings, background and icon-on colour; MQTT byte-identical without it).
+  `layout_fingerprint` now covers the settings too. Apply re-runs changed settings
+  through the form (`_checked_settings`) and keeps unchanged ones as stored. Tested
+  against HA 2026.9.3's NumberSelector (range) and ColorRGBSelector (three bytes).
+- **Not yet:** album art settings, images and icons, which stay in the dialog.
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 import voluptuous as vol
@@ -421,19 +422,39 @@ class OxrsOptionsFlow(OptionsFlow):
         than three separate 0-255 numbers. Temperature correction is not a
         firmware setting - it is applied here, to the Temperature sensor only.
         """
-        stored = self._entry.options.get(CONF_PANEL_SETTINGS) or {}
         if user_input is not None:
-            options = dict(self._entry.options)
-            options[CONF_PANEL_SETTINGS] = {
-                key: int(user_input[key]) for key in PANEL_SETTINGS if key in user_input
-            }
-            if CONF_TEMPERATURE_OFFSET in user_input:
-                options[CONF_TEMPERATURE_OFFSET] = float(user_input[CONF_TEMPERATURE_OFFSET])
-            for key in (CONF_BACKGROUND_COLOR, CONF_ICON_ON_COLOR):
-                if key in user_input:
-                    options[key] = [int(c) for c in user_input[key]]
-            return self.async_create_entry(title="", data=options)
+            return self.async_create_entry(
+                title="", data=self._panel_settings_options(self._entry.options, user_input)
+            )
+        return self.async_show_form(
+            step_id="panel_settings",
+            data_schema=self._panel_settings_schema(self._entry.options),
+        )
 
+    @staticmethod
+    def _panel_settings_options(
+        options: Mapping[str, Any], user_input: dict[str, Any]
+    ) -> dict[str, Any]:
+        """The options with the panel settings form's answers saved into them.
+
+        Shared with the OXRS panels page, so a setting saved there is stored exactly
+        as the dialog stores it.
+        """
+        options = dict(options)
+        options[CONF_PANEL_SETTINGS] = {
+            key: int(user_input[key]) for key in PANEL_SETTINGS if key in user_input
+        }
+        if CONF_TEMPERATURE_OFFSET in user_input:
+            options[CONF_TEMPERATURE_OFFSET] = float(user_input[CONF_TEMPERATURE_OFFSET])
+        for key in (CONF_BACKGROUND_COLOR, CONF_ICON_ON_COLOR):
+            if key in user_input:
+                options[key] = [int(c) for c in user_input[key]]
+        return options
+
+    @staticmethod
+    def _panel_settings_schema(options: Mapping[str, Any]) -> vol.Schema:
+        """The panel settings form, pre-filled from options (stored, or a page's draft)."""
+        stored = options.get(CONF_PANEL_SETTINGS) or {}
         fields: dict[Any, Any] = {
             vol.Required(
                 key, default=stored.get(key, default)
@@ -453,9 +474,7 @@ class OxrsOptionsFlow(OptionsFlow):
         fields[
             vol.Required(
                 CONF_TEMPERATURE_OFFSET,
-                default=self._entry.options.get(
-                    CONF_TEMPERATURE_OFFSET, DEFAULT_TEMPERATURE_OFFSET
-                ),
+                default=options.get(CONF_TEMPERATURE_OFFSET, DEFAULT_TEMPERATURE_OFFSET),
             )
         ] = selector.NumberSelector(
             selector.NumberSelectorConfig(
@@ -475,12 +494,10 @@ class OxrsOptionsFlow(OptionsFlow):
             fields[
                 vol.Required(
                     key,
-                    default=list(normalize_rgb(self._entry.options.get(key)) or default),
+                    default=list(normalize_rgb(options.get(key)) or default),
                 )
             ] = selector.ColorRGBSelector()
-        return self.async_show_form(
-            step_id="panel_settings", data_schema=vol.Schema(fields)
-        )
+        return vol.Schema(fields)
 
     async def async_step_album_art_settings(
         self, user_input: dict[str, Any] | None = None
