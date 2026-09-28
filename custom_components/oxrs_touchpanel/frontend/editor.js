@@ -34,7 +34,12 @@ const WS = {
   library: "oxrs_touchpanel/editor/library",
   libraryAdd: "oxrs_touchpanel/editor/library_add",
   libraryDelete: "oxrs_touchpanel/editor/library_delete",
+  device: "oxrs_touchpanel/editor/device",
+  restart: "oxrs_touchpanel/editor/restart",
+  firmwareInstall: "oxrs_touchpanel/editor/firmware_install",
 };
+// While a firmware update runs, how often the Device sheet asks how it is going.
+const DEVICE_POLL_MS = 2000;
 const BUILTIN_ICONS = new Set([
   "_3dprint", "_blind", "_bulb", "_ceilingfan", "_coffee", "_door", "_feed", "_locked",
   "_music", "_onoff", "_pause", "_play", "_remote", "_slider", "_speaker", "_thermometer",
@@ -62,7 +67,7 @@ const DRAG_START_PX = 6;
 // the page changes screen with the tile still held.
 const EDGE_HOVER_MS = 600;
 // Sheet modes that hold a form being filled in; the data refreshing must not wipe them.
-const FORM_MODES = new Set(["form", "playlists", "screen", "settings", "library"]);
+const FORM_MODES = new Set(["form", "playlists", "screen", "settings", "library", "device"]);
 
 // A colour the firmware treats as set: pure black means "unset, inherit".
 function colour(rgb) {
@@ -201,6 +206,7 @@ class OxrsPanelEditor extends HTMLElement {
   disconnectedCallback() {
     this._resize.disconnect();
     clearTimeout(this._fetchTimer);
+    clearTimeout(this._devicePoll);
   }
 
   // ── data ──────────────────────────────────────────────────────────────
@@ -457,6 +463,7 @@ class OxrsPanelEditor extends HTMLElement {
     this._screenForm = null;
     this._settingsForm = null;
     this._libraryState = null;
+    this._closeDevice(false);
     this._renderAll();
   }
 
@@ -505,7 +512,8 @@ class OxrsPanelEditor extends HTMLElement {
         "span",
         { class: "info-actions" },
         el("button", { class: "settings-button", onclick: () => this._openSettings() }, "Panel settings"),
-        el("button", { class: "settings-button", onclick: () => this._openLibrary() }, "Library")
+        el("button", { class: "settings-button", onclick: () => this._openLibrary() }, "Library"),
+        el("button", { class: "settings-button", onclick: () => this._openDevice() }, "Device")
       )
     ));
 
@@ -1186,6 +1194,7 @@ class OxrsPanelEditor extends HTMLElement {
     this._moving = null;
     this._selected = null;
     this._libraryState = null;
+    this._closeDevice(false);
     this._markSelected();
     this._sheetMode = "settings";
     const form = { forms: null, error: null, ready: null };
@@ -1306,6 +1315,7 @@ class OxrsPanelEditor extends HTMLElement {
     this._selected = null;
     this._markSelected();
     this._settingsForm = null;
+    this._closeDevice(false);
     this._sheetMode = "library";
     this._libraryState = { data: null, error: null, picked: null, confirm: false, adding: null, busy: false };
     this._renderSheet();
@@ -1590,6 +1600,206 @@ class OxrsPanelEditor extends HTMLElement {
     await this._libraryChanged();
   }
 
+  // ── the device: restart and firmware ──────────────────────────────────
+  async _openDevice() {
+    if (this._formOpen) {
+      this._say("Finish or cancel the open form first.", true);
+      return;
+    }
+    if (!this._stored) return;
+    this._moving = null;
+    this._selected = null;
+    this._markSelected();
+    this._settingsForm = null;
+    this._libraryState = null;
+    this._sheetMode = "device";
+    this._deviceState = { entryId: this._stored.entry_id, data: null, error: null, confirm: null, version: null, busy: false };
+    this._renderSheet();
+    if (this._narrow) this._sheetEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    await this._loadDevice();
+  }
+
+  _closeDevice(render = true) {
+    clearTimeout(this._devicePoll);
+    this._devicePoll = null;
+    this._deviceState = null;
+    if (this._sheetMode === "device") this._sheetMode = null;
+    if (render) this._renderSheet();
+  }
+
+  async _loadDevice(refresh = false) {
+    const state = this._deviceState;
+    if (!state) return;
+    clearTimeout(this._devicePoll);
+    try {
+      state.data = await this._hass.callWS({ type: WS.device, entry_id: state.entryId, ...(refresh ? { refresh: true } : {}) });
+      state.error = null;
+      const versions = (state.data.releases || []).map((r) => r.version);
+      if (!state.version || !versions.includes(state.version)) state.version = state.data.latest || versions[0] || null;
+    } catch (err) {
+      state.error = err?.message || String(err);
+    }
+    if (this._deviceState !== state) return;
+    this._renderSheet();
+    // Follow an update while it runs; stop once it has finished.
+    if (state.data?.job?.active) this._devicePoll = setTimeout(() => this._loadDevice(), DEVICE_POLL_MS);
+  }
+
+  _renderDevice() {
+    const sheet = this._sheetEl;
+    const state = this._deviceState;
+    sheet.append(el("h3", {}, "Device"));
+    if (state.error) sheet.append(el("p", { class: "hint error" }, state.error));
+    const data = state.data;
+    if (!data) {
+      if (!state.error) sheet.append(el("p", { class: "hint" }, "Loading…"));
+      sheet.append(el("div", { class: "actions" }, el("button", { onclick: () => this._closeDevice() }, "Close")));
+      return;
+    }
+    const connection = data.mode ? `${data.mode === "ethernet" ? "Ethernet" : "Wi-Fi"}${data.ip ? `, ${data.ip}` : ""}` : data.ip || "not reported";
+    const rows = [
+      ["Status", data.available ? "Online" : "Offline"],
+      ["Board", data.hardware || "not reported"],
+      ["Connection", connection],
+      ["Firmware", data.firmware_version || "not reported"],
+      ["MQTT id", data.client_id],
+    ];
+    sheet.append(el("dl", {}, rows.map(([k, v]) => [el("dt", {}, k), el("dd", { class: k === "Status" && !data.available ? "offline" : null }, v)])));
+
+    const job = data.job;
+    const busy = !!job?.active;
+
+    // Restart
+    sheet.append(el("h4", { class: "section" }, "Restart"));
+    if (state.confirm === "restart") {
+      sheet.append(
+        el("p", { class: "hint" }, "The screen goes dark for about 20 seconds, then the panel comes back and is sent its tiles again."),
+        el(
+          "div",
+          { class: "actions" },
+          el("button", { class: "primary", disabled: state.busy, onclick: () => this._restartPanel() }, "Restart now"),
+          el("button", { onclick: () => { state.confirm = null; this._renderSheet(); } }, "Cancel")
+        )
+      );
+    } else {
+      sheet.append(el(
+        "div",
+        { class: "actions" },
+        el("button", { disabled: !data.available || busy, onclick: () => { state.confirm = "restart"; this._renderSheet(); } }, "Restart panel")
+      ));
+    }
+
+    // Firmware
+    sheet.append(el("h4", { class: "section" }, "Firmware"));
+    if (job) {
+      const labels = { downloading: "Downloading", sending: "Sending to the panel", restarting: "Restarting", done: "Done", failed: "Failed" };
+      const line = `${labels[job.state] || job.state}${job.active && job.progress !== null && job.progress !== undefined ? ` · ${job.progress}%` : ""}`;
+      sheet.append(el(
+        "div",
+        { class: `job ${job.state}` },
+        el("div", { class: "job-head" }, `Firmware ${job.version}: ${line}`),
+        job.message ? el("div", { class: "job-message" }, job.message) : null,
+        job.active ? el("div", { class: "job-bar" }, el("span", { style: { width: job.progress === null ? "100%" : `${job.progress}%` }, class: job.progress === null ? "indeterminate" : null })) : null
+      ));
+      if (job.active) {
+        sheet.append(el("p", { class: "hint" }, "Keep the panel powered until it comes back. You can close this - the update carries on."));
+      }
+    }
+    if (!data.build) {
+      sheet.append(el("p", { class: "hint" }, data.hardware
+        ? "This panel hasn't said how it is connected yet, so the right firmware can't be chosen. It says so when it next starts up."
+        : "This panel hasn't said which board it is, so the right firmware can't be chosen."));
+    } else if (data.releases_error) {
+      sheet.append(el("p", { class: "hint error" }, data.releases_error));
+    } else if (!data.releases.length) {
+      sheet.append(el("p", { class: "hint" }, `No firmware release has a build for this panel (${data.build}).`));
+    } else {
+      const latest = data.releases.find((r) => r.version === data.latest);
+      const status = !data.firmware_version
+        ? "The panel hasn't reported which firmware it runs."
+        : latest && latest.newer
+          ? `Version ${latest.version} is available.`
+          : "Up to date with the latest release.";
+      sheet.append(el("p", { class: "hint" }, `${status} Build: ${data.build}.`));
+      const select = el(
+        "select",
+        { "aria-label": "Firmware version", disabled: busy },
+        data.releases.map((r) =>
+          el(
+            "option",
+            { value: r.version, selected: r.version === state.version },
+            `${r.version}${r.version === data.latest ? " (latest)" : ""}${r.prerelease ? " (pre-release)" : ""}${r.installed ? " - installed" : ""}${r.published ? ` · ${r.published}` : ""}`
+          )
+        )
+      );
+      select.addEventListener("change", () => { state.version = select.value; state.confirm = null; this._renderSheet(); });
+      const chosen = data.releases.find((r) => r.version === state.version);
+      sheet.append(el("div", { class: "field-label" }, "Version"), select);
+      if (chosen) {
+        sheet.append(el("p", { class: "hint" }, el("a", { href: chosen.url, target: "_blank", rel: "noreferrer" }, `What's in ${chosen.version}`)));
+      }
+      if (state.confirm === "install" && chosen) {
+        const notes = [
+          `Install firmware ${chosen.version} on ${data.title}?`,
+          chosen.installed ? " It is the version already installed; it will be installed again." : "",
+          chosen.newer === false && !chosen.installed ? " It is older than the one installed." : "",
+          chosen.prerelease ? " It is a pre-release: expect rough edges." : "",
+          " Home Assistant downloads it from the OXRS GitHub releases and sends it to the panel, which restarts. It takes a minute or two; don't unplug the panel meanwhile.",
+        ].join("");
+        sheet.append(
+          el("p", { class: "hint error" }, notes),
+          el(
+            "div",
+            { class: "actions" },
+            el("button", { class: "primary", disabled: state.busy, onclick: () => this._installFirmware(chosen.version) }, "Install"),
+            el("button", { onclick: () => { state.confirm = null; this._renderSheet(); } }, "Cancel")
+          )
+        );
+      } else {
+        sheet.append(el(
+          "div",
+          { class: "actions" },
+          el("button", { class: "primary", disabled: !data.available || busy || !chosen, onclick: () => { state.confirm = "install"; this._renderSheet(); } },
+            chosen?.installed ? "Reinstall" : "Install"),
+          el("button", { disabled: busy, onclick: () => this._loadDevice(true) }, "Check for new releases")
+        ));
+        if (!data.available) sheet.append(el("p", { class: "hint" }, "The panel must be online to take an update."));
+      }
+    }
+    sheet.append(el("p", { class: "hint" }, el("a", { href: data.releases_url, target: "_blank", rel: "noreferrer" }, "All firmware releases on GitHub")));
+    sheet.append(el("div", { class: "actions" }, el("button", { onclick: () => this._closeDevice() }, "Close")));
+  }
+
+  async _restartPanel() {
+    const state = this._deviceState;
+    state.busy = true;
+    this._renderSheet();
+    try {
+      await this._hass.callWS({ type: WS.restart, entry_id: state.entryId });
+      this._say("Restarting the panel. It comes back in about 20 seconds.");
+    } catch (err) {
+      this._say(err?.message || String(err), true);
+    }
+    state.busy = false;
+    state.confirm = null;
+    if (this._deviceState === state) this._renderSheet();
+  }
+
+  async _installFirmware(version) {
+    const state = this._deviceState;
+    state.busy = true;
+    this._renderSheet();
+    try {
+      await this._hass.callWS({ type: WS.firmwareInstall, entry_id: state.entryId, version });
+      this._say(`Updating the panel to firmware ${version}.`);
+    } catch (err) {
+      this._say(err?.message || String(err), true);
+    }
+    state.busy = false;
+    state.confirm = null;
+    await this._loadDevice();
+  }
+
   // ── picking and the side sheet ────────────────────────────────────────
   _pick(selection) {
     if (Date.now() - (this._dragEndedAt || 0) < 400) return; // the click that ends a drag
@@ -1598,6 +1808,8 @@ class OxrsPanelEditor extends HTMLElement {
       this._say("Finish or cancel the open form first.", true);
       return;
     }
+    this._closeDevice(false);
+    this._libraryState = null;
     this._selected = selection;
     this._sheetMode = selection.kind === "empty" ? "types" : null;
     this._markSelected();
@@ -1639,6 +1851,7 @@ class OxrsPanelEditor extends HTMLElement {
     }
     if (this._sheetMode === "settings" && this._settingsForm) return this._renderSettingsForm();
     if (this._sheetMode === "library" && this._libraryState) return this._renderLibrary();
+    if (this._sheetMode === "device" && this._deviceState) return this._renderDevice();
     if (!view || !s) {
       sheet.append(el("p", { class: "hint" }, "Tap a tile to change, move or remove it, or an empty space to add a tile there. Drag a tile to move it (on a phone: press and hold it first); hold it over an arrow to take it to another screen. Tap a screen's name to rename or recolour it. Swipe, or use the arrows, to change screens; the last screen is a new one."));
       return;
@@ -2014,6 +2227,16 @@ button[disabled] { opacity: 0.5; cursor: default; }
 .lib-details { border: 1px solid var(--divider-color); border-radius: 8px; padding: 8px 10px; margin: 4px 0 8px; }
 .lib-details dl { margin: 4px 0; }
 .lib-uses { margin: 0 0 4px; padding-left: 18px; font-size: 13px; }
+.job { border: 1px solid var(--divider-color); border-radius: 8px; padding: 8px 10px; margin: 4px 0 8px; font-size: 14px; }
+.job.failed { border-color: var(--error-color); }
+.job.done { border-color: var(--success-color, #4caf50); }
+.job-head { font-weight: 500; }
+.job-message { color: var(--secondary-text-color); margin-top: 2px; }
+.job-bar { height: 6px; border-radius: 3px; background: var(--divider-color); margin-top: 8px; overflow: hidden; }
+.job-bar span { display: block; height: 100%; background: var(--primary-color); transition: width 0.4s; }
+.job-bar span.indeterminate { animation: job-pulse 1.2s ease-in-out infinite; }
+@keyframes job-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+.sheet a { color: var(--primary-color); }
 .lib-preview { display: flex; align-items: center; gap: 10px; margin: 8px 0; font-size: 13px; color: var(--secondary-text-color); }
 .lib-preview .warn { color: var(--warning-color, #ffa600); }
 .lib-preview .error { color: var(--error-color); }

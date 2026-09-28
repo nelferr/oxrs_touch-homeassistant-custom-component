@@ -57,6 +57,10 @@ on/off state, labels and album art - and lets you change them:
 - Tap **Panel settings** for the panel's timeouts, tile brightness, sensor interval,
   temperature correction, background colour, icon colour and album art sizing. The
   preview shows the colours and brightness before you apply them.
+- Tap **Device** to see the panel's board, address and firmware, restart it, or update
+  its firmware. Updates come from the official OXRS firmware releases on GitHub, built
+  for the panel's own board and connection; Home Assistant also offers the latest
+  stable release as a firmware update on the panel's device page.
 - Tap **Library** to see the background images and custom icons every panel shares,
   and which tiles use each. Add one by choosing a file (or pasting the OXRS Asset
   Generator's base64), or delete one.

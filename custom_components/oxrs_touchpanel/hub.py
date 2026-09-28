@@ -24,6 +24,7 @@ from .albumart import (
     async_build_art,
     big_art_geometry,
 )
+from . import firmware
 from .boards import hardware_from_adopt, layout_from_data, screen_size
 from .grid import ONE, clipped, span_payload, tile_pixels, tile_span
 from .colors import BLACK, normalize_rgb, override_payload, rgb_payload
@@ -73,6 +74,7 @@ from .const import (
     PANEL_SETTINGS,
     SETTINGS_KEYS,
     signal_available,
+    signal_firmware,
     signal_tele,
     topic_adopt,
     topic_cmnd,
@@ -265,6 +267,14 @@ class OxrsPanel:
         self._reported_hardware: str | None = None
         # The stored board only warns once if the panel later reports another.
         self._warned_hardware = False
+        # What its adopt message says about its firmware and network, for updates.
+        self.firmware_version: str | None = None
+        self.ip_address: str | None = None
+        self.network_mode: str | None = None
+        # A firmware update in progress or just finished (firmware.FirmwareJob).
+        self.firmware_job: firmware.FirmwareJob | None = None
+        # Updates waiting for the panel to come back on a version: (version, event).
+        self._firmware_waiters: list[tuple[str, asyncio.Event]] = []
 
     @property
     def tiles(self) -> list[dict[str, Any]]:
@@ -525,6 +535,29 @@ class OxrsPanel:
         return self.entry.data.get(CONF_HARDWARE)
 
     @property
+    def reported_hardware(self) -> str | None:
+        """The board the panel says it is now, else the one it was added as."""
+        return self._reported_hardware or self.hardware
+
+    def expect_firmware(self, version: str) -> asyncio.Event:
+        """An event set when the panel next announces itself running this version."""
+        event = asyncio.Event()
+        self._firmware_waiters.append((version, event))
+        return event
+
+    async def async_install_firmware(self, version: str) -> firmware.FirmwareJob:
+        """Update the panel's firmware to a release (see firmware.async_install).
+
+        Raises RuntimeError if an update is already running on this panel.
+        """
+        if self.firmware_job is not None and self.firmware_job.active:
+            raise RuntimeError("An update is already running on this panel.")
+        signal = signal_firmware(self.client_id)
+        return await firmware.async_install(
+            self.hass, self, version, lambda: async_dispatcher_send(self.hass, signal)
+        )
+
+    @property
     def layout(self) -> dict[str, int]:
         """The tile grid this panel was given when it was added.
 
@@ -536,13 +569,17 @@ class OxrsPanel:
     @property
     def device_info(self) -> DeviceInfo:
         """Device registry entry for this panel."""
-        return DeviceInfo(
+        info = DeviceInfo(
             identifiers={(DOMAIN, self.client_id)},
             name=self.entry.title,
             manufacturer=MANUFACTURER,
             model=MODEL,
             hw_version=self.hardware,
         )
+        # Left out until known: an explicit None would clear a version already stored.
+        if self.firmware_version:
+            info["sw_version"] = self.firmware_version
+        return info
 
     async def async_setup(self) -> None:
         """Subscribe to panel topics and start tracking bound entities."""
@@ -1234,6 +1271,7 @@ class OxrsPanel:
         reported = hardware_from_adopt(msg.payload)
         if reported:
             self._reported_hardware = reported
+        self._note_adopt(msg.payload)
         if self._warned_hardware or not reported or not self.hardware:
             return
         if reported != self.hardware:
@@ -1246,6 +1284,43 @@ class OxrsPanel:
                 self.hardware,
                 reported,
             )
+
+    def _note_adopt(self, payload: Any) -> None:
+        """Keep the firmware version and network address the panel announces.
+
+        Runs inside the adopt handler that also detects the board, so nothing that
+        goes wrong here may stop that.
+        """
+        try:
+            facts = firmware.adopt_facts(payload)
+            self.ip_address = facts["ip"] or self.ip_address
+            self.network_mode = facts["mode"] or self.network_mode
+            version = facts["version"]
+            if version:
+                changed = version != self.firmware_version
+                self.firmware_version = version
+                if changed:
+                    try:
+                        self._update_device_version(version)
+                    except Exception as err:  # noqa: BLE001 - cosmetic only
+                        _LOGGER.debug("Could not show firmware %s on the device page: %s", version, err)
+                # A panel that just took an update announces itself again on restart.
+                waiting = [(v, e) for v, e in self._firmware_waiters if v == version]
+                for item in waiting:
+                    item[1].set()
+                    self._firmware_waiters.remove(item)
+            async_dispatcher_send(self.hass, signal_firmware(self.client_id))
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Could not read the adopt message of %s: %s", self.client_id, err)
+
+    def _update_device_version(self, version: str) -> None:
+        """Show the firmware version on the device page, and follow it when it changes."""
+        from homeassistant.helpers import device_registry as dr
+
+        registry = dr.async_get(self.hass)
+        device = registry.async_get_device(identifiers={(DOMAIN, self.client_id)})
+        if device is not None and device.sw_version != version:
+            registry.async_update_device(device.id, sw_version=version)
 
     @callback
     def _on_tele(self, msg: mqtt.ReceiveMessage) -> None:
