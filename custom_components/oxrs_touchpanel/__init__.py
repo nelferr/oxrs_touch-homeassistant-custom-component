@@ -96,10 +96,30 @@ async def _async_migrate_legacy_images(
     hass.config_entries.async_update_entry(entry, options=new_options)
 
 
+def _remove_retired_entities(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Take entities this integration no longer provides out of the registry.
+
+    v2.5.0 had a firmware update entity that looked up releases on GitHub; firmware
+    now comes from a file chosen on the OXRS panels page, so it went. Without this it
+    would linger as "no longer provided". Housekeeping only: never blocks setup.
+    """
+    try:
+        from homeassistant.helpers import entity_registry as er
+
+        registry = er.async_get(hass)
+        client_id = entry.data.get(CONF_CLIENT_ID)
+        entity_id = registry.async_get_entity_id("update", DOMAIN, f"{client_id}_firmware")
+        if client_id and entity_id:
+            registry.async_remove(entity_id)
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.debug("Could not remove a retired entity of %s: %s", entry.title, err)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up a panel from a config entry."""
     library = await _async_get_library(hass)
     await _async_migrate_legacy_images(hass, entry, library)
+    _remove_retired_entities(hass, entry)
 
     panel = OxrsPanel(hass, entry, library)
     await panel.async_setup()

@@ -62,9 +62,11 @@ on/off state, labels and album art - and lets you change them:
   tile, icon, size and colours, whatever it is bound to), ready to place.
 - A panel Home Assistant finds on MQTT shows at the top of the page, with **Add panel**.
 - Tap **Device** to see the panel's board, address and firmware, restart it, update
-  its firmware, or delete the panel. Updates come from the official OXRS firmware releases on GitHub, built
-  for the panel's own board and connection; Home Assistant also offers the latest
-  stable release as a firmware update on the panel's device page.
+  its firmware, or delete the panel. To update, choose the firmware file - the OTA
+  image (`..._OTA.bin`) for the panel's board and connection, from the
+  [OXRS firmware releases](https://github.com/OXRS-IO/OXRS-IO-TouchPanel-ESP32-FW/releases)
+  or a build of your own. It is checked, then sent to the panel; nothing is fetched
+  from the internet.
 - Tap **Library** to see the background images and custom icons every panel shares,
   and which tiles use each. Add one by choosing a file (or pasting the OXRS Asset
   Generator's base64), or delete one.
