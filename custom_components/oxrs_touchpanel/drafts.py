@@ -108,17 +108,28 @@ def _key(tile: Any) -> str:
     return json.dumps(tile, sort_keys=True, ensure_ascii=True, default=str)
 
 
+def _without_place(tile: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in tile.items() if k not in (CONF_SCREEN, CONF_TILE)}
+
+
 def _is_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def _tile_problem(tile: dict[str, Any], cols: int, rows: int) -> str | None:
+def _tile_problem(
+    tile: dict[str, Any], cols: int, rows: int, moved_only: bool = False
+) -> str | None:
     """Why a new or changed tile could not have come from the dialog, or None."""
     screen, position = tile.get(CONF_SCREEN), tile.get(CONF_TILE)
     if not _is_int(screen) or not 1 <= screen <= MAX_SCREEN:
         return f"screen must be a number from 1 to {MAX_SCREEN}"
     if not _is_int(position) or not 1 <= position <= cols * rows:
         return f"position must be a number from 1 to {cols * rows}"
+    if moved_only:
+        # A stored tile that only changed place: what it is was accepted when it was
+        # saved (an old action tile included), so only where it now sits is checked.
+        size = tile_span(tile.get(CONF_SPAN))
+        return "size runs off the grid" if clipped(position, size, cols, rows) != size else None
     if tile.get(CONF_TYPE) not in TILE_TYPES:
         return "unknown tile type"
     entity_id = tile.get(CONF_ENTITY_ID)
@@ -145,16 +156,26 @@ def draft_problems(
         return ["The tiles sent were not a list of tiles."]
 
     unchanged = Counter(_key(t) for t in stored)
+    # The same tiles with their place left out, to recognise one that was only moved
+    # (to another position or screen). Each stored tile accounts for one draft tile.
+    placeless = Counter(_key(_without_place(t)) for t in stored)
     touched: list[bool] = []
-    problems: list[str] = []
     for tile in draft:
         key = _key(tile)
-        if unchanged[key] > 0:
+        touched.append(unchanged[key] <= 0)
+        if not touched[-1]:
             unchanged[key] -= 1
-            touched.append(False)
+            placeless[_key(_without_place(tile))] -= 1
+
+    problems: list[str] = []
+    for tile, is_touched in zip(draft, touched):
+        if not is_touched:
             continue
-        touched.append(True)
-        problem = _tile_problem(tile, cols, rows)
+        moved_key = _key(_without_place(tile))
+        moved_only = placeless[moved_key] > 0
+        if moved_only:
+            placeless[moved_key] -= 1
+        problem = _tile_problem(tile, cols, rows, moved_only)
         if problem:
             problems.append(
                 f"Screen {tile.get(CONF_SCREEN)}, position {tile.get(CONF_TILE)}: {problem}."

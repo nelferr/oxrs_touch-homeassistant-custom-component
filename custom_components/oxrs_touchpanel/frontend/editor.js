@@ -9,7 +9,9 @@
 // Edits are staged: they change a draft (tiles, screen names and colours) that is
 // drawn as a preview, and nothing reaches the panel until "Apply to panel", which
 // sends the whole draft once. Tiles move by dragging (mouse), press-and-hold then
-// drag (touch - a plain swipe still changes screens), or the Move button.
+// drag (touch - a plain swipe still changes screens), or the Move button - to another
+// screen too: while dragging, hover over the arrows (or past the screen's side) to
+// change screens; with the Move button, change screens before tapping the target.
 //
 // Geometry and look follow the firmware (OXRS-IO-TouchPanel-ESP32-FW):
 //   cell = (screen width / cols) x ((screen height - 33 footer) / rows), integer division;
@@ -50,6 +52,9 @@ const HOLD_MS = 400;
 const HOLD_SLOP_PX = 10;
 // Mouse: how far it must move with the button down before a drag starts.
 const DRAG_START_PX = 6;
+// While dragging: how long to hover over an arrow, or past the screen's side, before
+// the page changes screen with the tile still held.
+const EDGE_HOVER_MS = 600;
 // Sheet modes that hold a form being filled in; the data refreshing must not wipe them.
 const FORM_MODES = new Set(["form", "playlists", "screen"]);
 
@@ -430,6 +435,10 @@ class OxrsPanelEditor extends HTMLElement {
 
   _renderAll() {
     if (!this._built) return;
+    if (this._drag?.active) {
+      this._renderPending = true; // drawn when the tile is dropped
+      return;
+    }
     this._renderToolbar();
     this._renderStage();
     // A form being filled in is left alone; everything else follows the data.
@@ -526,8 +535,8 @@ class OxrsPanelEditor extends HTMLElement {
   }
 
   _selectNone() {
-    if (FORM_MODES.has(this._sheetMode)) return; // keep an open form
-    this._moving = null; // a move stays on its own screen
+    // Keep an open form, and a move in progress: its target may be on another screen.
+    if (FORM_MODES.has(this._sheetMode) || this._sheetMode === "move") return;
     this._selected = null;
     this._sheetMode = null;
     this._markSelected();
@@ -752,13 +761,22 @@ class OxrsPanelEditor extends HTMLElement {
       });
   }
 
-  // What putting a tile's top-left corner at `anchor` would do: move it, swap it with
-  // a tile of the same size there, or nothing (with the reason).
-  _dropAt(view, screen, index, anchor) {
-    const placed = this._placed(view, screen);
-    const me = placed.find((p) => p.index === index);
+  // The tile at `index`, at the size it is drawn, with its screen.
+  _placedTile(view, index) {
+    const meta = (view.tiles || []).find((t) => t.index === index);
+    if (!meta) return null;
+    const me = this._placed(view, meta.screen).find((p) => p.index === index);
+    return me ? { ...me, screen: meta.screen } : null;
+  }
+
+  // What putting a tile's top-left corner at `anchor` on `screen` would do: move it,
+  // swap it with a tile of the same size there, or nothing (with the reason). The
+  // screen may be another one, or the new one at the end.
+  _dropAt(view, index, screen, anchor) {
+    const me = this._placedTile(view, index);
     if (!me) return { ok: false, reason: "That tile can't be moved." };
-    if (anchor === me.anchor) return { ok: false, same: true };
+    if (screen === me.screen && anchor === me.anchor) return { ok: false, same: true };
+    const placed = this._placed(view, screen);
     const other = placed.find((p) => p.anchor === anchor && p.index !== index);
     if (other) {
       if (other.w === me.w && other.h === me.h) return { ok: true, swap: other, me };
@@ -775,21 +793,40 @@ class OxrsPanelEditor extends HTMLElement {
     return { ok: true, me };
   }
 
-  async _move(screen, index, anchor) {
+  async _move(index, screen, anchor) {
     const view = this._view;
-    const result = this._dropAt(view, screen, index, anchor);
+    const result = this._dropAt(view, index, screen, anchor);
     if (!result.ok) {
       if (!result.same) this._say(result.reason, true);
       return;
     }
+    const me = result.me;
     const tiles = clone(this._startDraft().tiles);
-    const from = tiles[index].tile;
+    tiles[index].screen = screen;
     tiles[index].tile = anchor;
-    if (result.swap) tiles[result.swap.index].tile = from;
+    if (result.swap) {
+      tiles[result.swap.index].screen = me.screen;
+      tiles[result.swap.index].tile = me.anchor;
+    }
+    const across = screen !== me.screen;
     await this._commit(
       { tiles },
-      result.swap ? `Swapped ${result.me.label} and ${result.swap.label}` : `Moved ${result.me.label}`
+      result.swap
+        ? `Swapped ${me.label} and ${result.swap.label}`
+        : `Moved ${me.label}${across ? ` to screen ${screen}` : ""}`
     );
+    if (!across) return;
+    // Follow the tile to its new screen; the slides may have changed around it.
+    const target = (this._slides || []).findIndex((s) => s.screen === screen && !s.isNew);
+    if (target >= 0 && target !== this._screenIndex) {
+      this._screenIndex = target;
+      if (this._track) this._track.scrollLeft = target * this._track.clientWidth;
+      this._updateDots();
+    }
+    // A screen holds tiles or does not exist: one left empty leaves the panel.
+    if (!result.swap && !tiles.some((t) => t.screen === me.screen)) {
+      this._say(`Screen ${me.screen} is now empty, so it will be taken off the panel.`);
+    }
   }
 
   // The Move button: pick the tile up, then tap where it should go.
@@ -809,7 +846,6 @@ class OxrsPanelEditor extends HTMLElement {
 
   _moveTo(selection) {
     const moving = this._moving;
-    if (selection.screen !== moving.screen) return this._say("Move it within its own screen.", true);
     const view = this._view;
     // A tile tapped is a target by its top-left corner.
     let anchor = selection.tile;
@@ -818,7 +854,7 @@ class OxrsPanelEditor extends HTMLElement {
       if (target && target.index === moving.index) return this._cancelMove();
       anchor = target ? target.anchor : selection.tile;
     }
-    this._move(moving.screen, moving.index, anchor);
+    this._move(moving.index, selection.screen, anchor);
   }
 
   // Outline where the tile being moved can go.
@@ -827,8 +863,8 @@ class OxrsPanelEditor extends HTMLElement {
     const view = this._view;
     for (const node of this.shadowRoot.querySelectorAll(".tile, .empty")) {
       let ok = false;
-      if (moving && view && Number(node.dataset.screen) === moving.screen) {
-        ok = this._dropAt(view, moving.screen, moving.index, Number(node.dataset.tile)).ok;
+      if (moving && view) {
+        ok = this._dropAt(view, moving.index, Number(node.dataset.screen), Number(node.dataset.tile)).ok;
       }
       node.classList.toggle("drop-ok", ok);
       node.classList.toggle("moving", !!moving && node.classList.contains("tile")
@@ -858,7 +894,8 @@ class OxrsPanelEditor extends HTMLElement {
     if (FORM_MODES.has(this._sheetMode) || this._sheetMode === "move" || this._drag) return;
     const meta = this._meta(this._view, screen, tile);
     if (!meta) return;
-    const drag = { node, screen, meta, x0: x, y0: y, touch, active: false, anchor: null };
+    // from: the screen it was picked up on; screen: the one it is over now.
+    const drag = { node, from: screen, screen, meta, x0: x, y0: y, touch, active: false, anchor: null };
     this._drag = drag;
     const move = (e) => {
       const point = touch ? e.touches[0] : e;
@@ -914,7 +951,7 @@ class OxrsPanelEditor extends HTMLElement {
       dx: Math.floor(px / geo.cellW) - ((anchor - 1) % cols),
       dy: Math.floor(py / geo.cellH) - Math.floor((anchor - 1) / cols),
     };
-    drag.me = this._placed(view, drag.screen).find((p) => p.index === drag.meta.index);
+    drag.me = this._placedTile(view, drag.meta.index);
     drag.node.classList.add("dragging");
     drag.marker = el("div", { class: "drop-marker" });
     canvas.append(drag.marker);
@@ -924,12 +961,15 @@ class OxrsPanelEditor extends HTMLElement {
   _dragTo(drag, x, y) {
     const { canvas, geo, me } = drag;
     if (!canvas || !me) return;
+    drag.x = x;
+    drag.y = y;
+    this._dragEdge(drag, x, y);
     const rect = canvas.getBoundingClientRect();
     const col = Math.floor((x - rect.left) / drag.scale / geo.cellW) - drag.grab.dx;
     const row = Math.floor((y - rect.top) / drag.scale / geo.cellH) - drag.grab.dy;
     const inside = col >= 0 && row >= 0 && col < geo.cols && row < geo.rows;
     drag.anchor = inside ? row * geo.cols + col + 1 : null;
-    const result = inside ? this._dropAt(this._view, drag.screen, drag.meta.index, drag.anchor) : { ok: false };
+    const result = inside ? this._dropAt(this._view, drag.meta.index, drag.screen, drag.anchor) : { ok: false };
     drag.ok = result.ok;
     Object.assign(drag.marker.style, {
       left: `${Math.max(0, col) * geo.cellW + geo.pad}px`,
@@ -942,11 +982,55 @@ class OxrsPanelEditor extends HTMLElement {
     drag.marker.classList.toggle("same", !!result.same);
   }
 
+  // Hovering over an arrow, or past the side of the screen, changes screen after a
+  // moment - and again while it stays there - with the tile still held.
+  _dragEdge(drag, x, y) {
+    const inRect = (node) => {
+      const r = node?.getBoundingClientRect();
+      return !!r && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+    };
+    const [prev, next] = this.shadowRoot.querySelectorAll(".nav .arrow");
+    const frame = drag.canvas.parentElement.getBoundingClientRect();
+    const side = y >= frame.top && y <= frame.bottom;
+    let dir = 0;
+    if (inRect(prev) || (side && x < frame.left - 4)) dir = -1;
+    else if (inRect(next) || (side && x > frame.right + 4)) dir = 1;
+    if (dir === drag.edgeDir) return;
+    clearTimeout(drag.edgeTimer);
+    drag.edgeDir = dir;
+    prev?.classList.toggle("hover", dir === -1);
+    next?.classList.toggle("hover", dir === 1);
+    if (dir) drag.edgeTimer = setTimeout(() => this._dragSwitch(drag, dir), EDGE_HOVER_MS);
+  }
+
+  _dragSwitch(drag, dir) {
+    const slides = this._slides || [];
+    const index = this._screenIndex + dir;
+    drag.edgeDir = 0;
+    if (!drag.active || index < 0 || index >= slides.length) return;
+    this._screenIndex = index;
+    this._track.scrollLeft = index * this._track.clientWidth;
+    this._updateDots();
+    const canvas = this._track.querySelectorAll(".slide")[index]?.querySelector(".screen");
+    if (!canvas) return;
+    canvas.append(drag.marker);
+    drag.canvas = canvas;
+    drag.screen = slides[index].screen;
+    drag.scale = canvas.getBoundingClientRect().width / canvas.offsetWidth;
+    // Still over the arrow: keep going after another pause.
+    this._dragTo(drag, drag.x, drag.y);
+  }
+
   _dragFinish(drag, drop) {
+    clearTimeout(drag.edgeTimer);
+    this.shadowRoot.querySelectorAll(".nav .arrow").forEach((a) => a.classList.remove("hover"));
     drag.node.classList.remove("dragging");
     drag.marker?.remove();
     this._dragEndedAt = Date.now();
-    if (drop && drag.anchor) this._move(drag.screen, drag.meta.index, drag.anchor);
+    const pending = this._renderPending;
+    this._renderPending = false;
+    if (drop && drag.anchor) this._move(drag.meta.index, drag.screen, drag.anchor);
+    else if (pending) this._renderAll();
   }
 
   // ── screens ───────────────────────────────────────────────────────────
@@ -1091,13 +1175,13 @@ class OxrsPanelEditor extends HTMLElement {
       add(
         sheet,
         el("h3", {}, `Move ${this._moving.label}`),
-        el("p", { class: "hint" }, "Tap where it should go: an outlined space, or a tile of the same size to swap with."),
+        el("p", { class: "hint" }, "Tap where it should go: an outlined space, or a tile of the same size to swap with. To move it to another screen, swipe or use the arrows first; the last screen is a new one."),
         el("div", { class: "actions" }, el("button", { onclick: () => this._cancelMove() }, "Cancel"))
       );
       return;
     }
     if (!view || !s) {
-      sheet.append(el("p", { class: "hint" }, "Tap a tile to change, move or remove it, or an empty space to add a tile there. Drag a tile to move it (on a phone: press and hold it first). Tap a screen's name to rename or recolour it. Swipe, or use the arrows, to change screens; the last screen is a new one."));
+      sheet.append(el("p", { class: "hint" }, "Tap a tile to change, move or remove it, or an empty space to add a tile there. Drag a tile to move it (on a phone: press and hold it first); hold it over an arrow to take it to another screen. Tap a screen's name to rename or recolour it. Swipe, or use the arrows, to change screens; the last screen is a new one."));
       return;
     }
     if (this._sheetMode === "form" || this._sheetMode === "playlists") return this._renderForm();
@@ -1419,6 +1503,7 @@ select { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid 
 .sublabel { bottom: 5px; opacity: 0.7; }
 .footer { position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: space-between; padding: 0 10px; color: #ccc; font-size: 14px; box-sizing: border-box; }
 .footer-icon { font-size: 18px; opacity: 0.7; }
+.arrow.hover { border-color: var(--primary-color); background: var(--primary-color); color: var(--text-primary-color, #fff); }
 .nav { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 12px; }
 .arrow { font-size: 26px; line-height: 1; width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--divider-color); background: var(--card-background-color); color: var(--primary-text-color); cursor: pointer; }
 .dots { display: flex; gap: 6px; align-items: center; }

@@ -49,6 +49,10 @@ on/off state, labels and album art - and lets you change them:
 - Tap a tile to edit, move or remove it.
 - Drag a tile to move it (on a phone, press and hold it first). Dropping it on a tile of the
   same size swaps the two.
+- To move a tile to another screen, drag it over the arrows (or past the side of the screen)
+  and hold it there until the screen changes, or tap **Move**, change screens, then tap
+  where it should go. Moving a tile to the last, new screen creates that screen; a screen
+  left without tiles is taken off the panel.
 - Tap a screen's name to rename it or give it its own background colour.
 
 Changes are staged until you press **Apply to panel**, which sends them to the panel in
