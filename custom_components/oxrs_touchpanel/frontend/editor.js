@@ -6,8 +6,10 @@
 // changes too - so this page cannot drift from the panel. Tile forms are built by the
 // options dialog's own code and rendered with Home Assistant's own <ha-form>.
 //
-// Edits are staged: they change a draft that is drawn as a preview, and nothing
-// reaches the panel until "Apply to panel", which sends the whole draft once.
+// Edits are staged: they change a draft (tiles, screen names and colours) that is
+// drawn as a preview, and nothing reaches the panel until "Apply to panel", which
+// sends the whole draft once. Tiles move by dragging (mouse), press-and-hold then
+// drag (touch - a plain swipe still changes screens), or the Move button.
 //
 // Geometry and look follow the firmware (OXRS-IO-TouchPanel-ESP32-FW):
 //   cell = (screen width / cols) x ((screen height - 33 footer) / rows), integer division;
@@ -42,6 +44,14 @@ const REFRESH_MS = 1000;
 // After an apply the integration reloads the panel; give it a moment before reading back.
 const APPLY_SETTLE_MS = 1500;
 const UNDO_MS = 8000;
+// Touch: how long a press must be held before it picks a tile up, and how far a
+// finger may wander before that, which is a swipe rather than a press.
+const HOLD_MS = 400;
+const HOLD_SLOP_PX = 10;
+// Mouse: how far it must move with the button down before a drag starts.
+const DRAG_START_PX = 6;
+// Sheet modes that hold a form being filled in; the data refreshing must not wipe them.
+const FORM_MODES = new Set(["form", "playlists", "screen"]);
 
 // A colour the firmware treats as set: pure black means "unset, inherit".
 function colour(rgb) {
@@ -230,6 +240,8 @@ class OxrsPanelEditor extends HTMLElement {
         type: WS.preview,
         entry_id: this._draft.entry_id,
         tiles: this._draft.tiles,
+        screen_names: this._draft.screen_names,
+        screen_colors: this._draft.screen_colors,
       });
     } catch (err) {
       this._say(`Couldn't draw the changes: ${err?.message || err}`, true);
@@ -263,7 +275,14 @@ class OxrsPanelEditor extends HTMLElement {
   _startDraft() {
     const stored = this._stored;
     if (!this._draft) {
-      this._draft = { entry_id: stored.entry_id, base: stored.fingerprint, tiles: clone(stored.config_tiles), changes: 0 };
+      this._draft = {
+        entry_id: stored.entry_id,
+        base: stored.fingerprint,
+        tiles: clone(stored.config_tiles),
+        screen_names: clone(stored.config_screen_names || {}),
+        screen_colors: clone(stored.config_screen_colors || {}),
+        changes: 0,
+      };
     }
     return this._draft;
   }
@@ -274,11 +293,18 @@ class OxrsPanelEditor extends HTMLElement {
     this._dropUndo();
   }
 
-  async _commit(tiles, label) {
+  // change: any of {tiles, screen_names, screen_colors}, replacing the draft's.
+  async _commit(change, label) {
     const draft = this._startDraft();
-    const before = { tiles: clone(draft.tiles), changes: draft.changes };
-    draft.tiles = tiles;
+    const before = {
+      tiles: clone(draft.tiles),
+      screen_names: clone(draft.screen_names),
+      screen_colors: clone(draft.screen_colors),
+      changes: draft.changes,
+    };
+    Object.assign(draft, change);
     draft.changes += 1;
+    this._moving = null;
     this._message = null; // a new change replaces the last one's message
     this._selected = null;
     this._sheetMode = null;
@@ -308,6 +334,8 @@ class OxrsPanelEditor extends HTMLElement {
   async _doUndo() {
     if (!this._undo || !this._draft) return;
     this._draft.tiles = this._undo.tiles;
+    this._draft.screen_names = this._undo.screen_names;
+    this._draft.screen_colors = this._undo.screen_colors;
     this._draft.changes = this._undo.changes;
     this._dropUndo();
     if (!this._draft.changes) this._clearDraft();
@@ -335,6 +363,8 @@ class OxrsPanelEditor extends HTMLElement {
         type: WS.apply,
         entry_id: this._draft.entry_id,
         tiles: this._draft.tiles,
+        screen_names: this._draft.screen_names,
+        screen_colors: this._draft.screen_colors,
         fingerprint: this._draft.base,
       });
       this._clearDraft();
@@ -403,7 +433,7 @@ class OxrsPanelEditor extends HTMLElement {
     this._renderToolbar();
     this._renderStage();
     // A form being filled in is left alone; everything else follows the data.
-    if (this._sheetMode !== "form" && this._sheetMode !== "playlists") this._renderSheet();
+    if (!FORM_MODES.has(this._sheetMode)) this._renderSheet();
     this._renderBar();
   }
 
@@ -462,6 +492,7 @@ class OxrsPanelEditor extends HTMLElement {
 
     this._track = track;
     this._slides = slides;
+    if (this._moving) this._markDropTargets();
     this._resize.disconnect();
     this._resize.observe(track);
     this._fit();
@@ -495,7 +526,8 @@ class OxrsPanelEditor extends HTMLElement {
   }
 
   _selectNone() {
-    if (this._sheetMode === "form" || this._sheetMode === "playlists") return; // keep an open form
+    if (FORM_MODES.has(this._sheetMode)) return; // keep an open form
+    this._moving = null; // a move stays on its own screen
     this._selected = null;
     this._sheetMode = null;
     this._markSelected();
@@ -572,12 +604,23 @@ class OxrsPanelEditor extends HTMLElement {
     return el(
       "div",
       { class: "slide" },
-      el(
-        "div",
-        { class: "screen-name" },
-        screen.isNew ? "New screen" : screen.label || `Screen ${screen.screen}`,
-        el("span", {}, screen.isNew ? ` · add a tile to create screen ${screen.screen}` : ` · screen ${screen.screen}`)
-      ),
+      screen.isNew
+        ? el(
+            "div",
+            { class: "screen-name" },
+            "New screen",
+            el("span", {}, ` · add a tile to create screen ${screen.screen}`)
+          )
+        : el(
+            "button",
+            {
+              class: "screen-name editable",
+              title: "Change this screen's name or colour",
+              onclick: () => this._openScreen(screen.screen),
+            },
+            screen.label || `Screen ${screen.screen}`,
+            el("span", {}, ` · screen ${screen.screen} ✎`)
+          ),
       el("div", { class: "frame" }, canvas)
     );
   }
@@ -664,12 +707,353 @@ class OxrsPanelEditor extends HTMLElement {
     const label = state.label ?? tileConf.label;
     if (label) node.append(el("div", { class: "label", style: { color: textColour } }, label));
     if (state.subLabel) node.append(el("div", { class: "sublabel", style: { color: textColour } }, state.subLabel));
+    this._enableDrag(node, screen.screen, tileConf.tile);
     return node;
+  }
+
+  // ── moving tiles ──────────────────────────────────────────────────────
+  _geometry(view) {
+    const { width, height } = view.screen_px;
+    const { cols, rows } = view.grid;
+    return {
+      cols,
+      rows,
+      pad: view.padding_px,
+      cellW: Math.floor(width / cols),
+      cellH: Math.floor((height - view.footer_px) / rows),
+    };
+  }
+
+  // The cells a tile of w x h covers from an anchor, or null if it would leave the grid.
+  _cells(view, anchor, w, h) {
+    const { cols, rows } = view.grid;
+    if (!Number.isInteger(anchor) || anchor < 1 || anchor > cols * rows) return null;
+    const row = Math.floor((anchor - 1) / cols), col = (anchor - 1) % cols;
+    if (row + h > rows || col + w > cols) return null;
+    const cells = [];
+    for (let dy = 0; dy < h; dy++) for (let dx = 0; dx < w; dx++) cells.push((row + dy) * cols + col + dx + 1);
+    return cells;
+  }
+
+  // The tiles on a screen, at the size they are drawn (clipped to the grid).
+  _placed(view, screen) {
+    const { cols, rows } = view.grid;
+    return (view.tiles || [])
+      .filter((t) => t.screen === screen && Number.isInteger(t.tile) && t.tile >= 1 && t.tile <= cols * rows)
+      .map((t) => {
+        const row = Math.floor((t.tile - 1) / cols), col = (t.tile - 1) % cols;
+        return {
+          index: t.index,
+          anchor: t.tile,
+          w: Math.min(t.size[0], cols - col),
+          h: Math.min(t.size[1], rows - row),
+          label: t.label || t.type_label,
+        };
+      });
+  }
+
+  // What putting a tile's top-left corner at `anchor` would do: move it, swap it with
+  // a tile of the same size there, or nothing (with the reason).
+  _dropAt(view, screen, index, anchor) {
+    const placed = this._placed(view, screen);
+    const me = placed.find((p) => p.index === index);
+    if (!me) return { ok: false, reason: "That tile can't be moved." };
+    if (anchor === me.anchor) return { ok: false, same: true };
+    const other = placed.find((p) => p.anchor === anchor && p.index !== index);
+    if (other) {
+      if (other.w === me.w && other.h === me.h) return { ok: true, swap: other, me };
+      return { ok: false, reason: `${other.label} is a different size, so they can't swap.` };
+    }
+    const cells = this._cells(view, anchor, me.w, me.h);
+    if (!cells) return { ok: false, reason: `${me.label} doesn't fit there at its size.` };
+    const taken = new Set();
+    for (const p of placed) {
+      if (p.index === index) continue;
+      for (const c of this._cells(view, p.anchor, p.w, p.h) || []) taken.add(c);
+    }
+    if (cells.some((c) => taken.has(c))) return { ok: false, reason: "Another tile is in the way." };
+    return { ok: true, me };
+  }
+
+  async _move(screen, index, anchor) {
+    const view = this._view;
+    const result = this._dropAt(view, screen, index, anchor);
+    if (!result.ok) {
+      if (!result.same) this._say(result.reason, true);
+      return;
+    }
+    const tiles = clone(this._startDraft().tiles);
+    const from = tiles[index].tile;
+    tiles[index].tile = anchor;
+    if (result.swap) tiles[result.swap.index].tile = from;
+    await this._commit(
+      { tiles },
+      result.swap ? `Swapped ${result.me.label} and ${result.swap.label}` : `Moved ${result.me.label}`
+    );
+  }
+
+  // The Move button: pick the tile up, then tap where it should go.
+  _startMove(meta) {
+    this._moving = { index: meta.index, screen: meta.screen, label: meta.label || meta.type_label };
+    this._sheetMode = "move";
+    this._renderSheet();
+    this._markDropTargets();
+  }
+
+  _cancelMove() {
+    this._moving = null;
+    this._sheetMode = null;
+    this._markDropTargets();
+    this._renderSheet();
+  }
+
+  _moveTo(selection) {
+    const moving = this._moving;
+    if (selection.screen !== moving.screen) return this._say("Move it within its own screen.", true);
+    const view = this._view;
+    // A tile tapped is a target by its top-left corner.
+    let anchor = selection.tile;
+    if (selection.kind === "tile") {
+      const target = this._placed(view, selection.screen).find((p) => p.anchor === selection.tile);
+      if (target && target.index === moving.index) return this._cancelMove();
+      anchor = target ? target.anchor : selection.tile;
+    }
+    this._move(moving.screen, moving.index, anchor);
+  }
+
+  // Outline where the tile being moved can go.
+  _markDropTargets() {
+    const moving = this._moving;
+    const view = this._view;
+    for (const node of this.shadowRoot.querySelectorAll(".tile, .empty")) {
+      let ok = false;
+      if (moving && view && Number(node.dataset.screen) === moving.screen) {
+        ok = this._dropAt(view, moving.screen, moving.index, Number(node.dataset.tile)).ok;
+      }
+      node.classList.toggle("drop-ok", ok);
+      node.classList.toggle("moving", !!moving && node.classList.contains("tile")
+        && Number(node.dataset.screen) === moving?.screen && this._meta(view, moving.screen, Number(node.dataset.tile))?.index === moving.index);
+    }
+  }
+
+  // Drag: the mouse drags at once; a finger has to press and hold first, so a swipe
+  // across the tiles still changes screens.
+  _enableDrag(node, screen, tile) {
+    node.addEventListener("mousedown", (e) => {
+      if (e.button === 0) this._dragArm(e.clientX, e.clientY, node, screen, tile, false);
+    });
+    node.addEventListener(
+      "touchstart",
+      (e) => {
+        if (e.touches.length === 1) this._dragArm(e.touches[0].clientX, e.touches[0].clientY, node, screen, tile, true);
+      },
+      { passive: true }
+    );
+    node.addEventListener("contextmenu", (e) => {
+      if (this._drag) e.preventDefault();
+    });
+  }
+
+  _dragArm(x, y, node, screen, tile, touch) {
+    if (FORM_MODES.has(this._sheetMode) || this._sheetMode === "move" || this._drag) return;
+    const meta = this._meta(this._view, screen, tile);
+    if (!meta) return;
+    const drag = { node, screen, meta, x0: x, y0: y, touch, active: false, anchor: null };
+    this._drag = drag;
+    const move = (e) => {
+      const point = touch ? e.touches[0] : e;
+      if (!point) return;
+      const dx = point.clientX - drag.x0, dy = point.clientY - drag.y0;
+      if (!drag.active) {
+        if (touch) {
+          if (Math.hypot(dx, dy) > HOLD_SLOP_PX) end(false); // a swipe, not a press
+          return;
+        }
+        if (Math.hypot(dx, dy) < DRAG_START_PX) return;
+        this._dragStart(drag);
+      }
+      if (touch) e.preventDefault(); // the page must not scroll while a tile is held
+      this._dragTo(drag, point.clientX, point.clientY);
+    };
+    const end = (drop) => {
+      clearTimeout(drag.timer);
+      window.removeEventListener(touch ? "touchmove" : "mousemove", move);
+      window.removeEventListener(touch ? "touchend" : "mouseup", up);
+      window.removeEventListener("touchcancel", cancel);
+      if (this._drag === drag) this._drag = null;
+      if (drag.active) this._dragFinish(drag, drop);
+    };
+    const up = () => end(true);
+    const cancel = () => end(false);
+    window.addEventListener(touch ? "touchmove" : "mousemove", move, { passive: false });
+    window.addEventListener(touch ? "touchend" : "mouseup", up);
+    if (touch) {
+      window.addEventListener("touchcancel", cancel);
+      drag.timer = setTimeout(() => {
+        this._dragStart(drag);
+        navigator.vibrate?.(15);
+      }, HOLD_MS);
+    }
+  }
+
+  _dragStart(drag) {
+    if (drag.active) return;
+    drag.active = true;
+    const canvas = drag.node.parentElement;
+    const view = this._view;
+    const geo = this._geometry(view);
+    const { cols } = geo;
+    const rect = canvas.getBoundingClientRect();
+    drag.canvas = canvas;
+    drag.geo = geo;
+    drag.scale = rect.width / canvas.offsetWidth;
+    const px = (drag.x0 - rect.left) / drag.scale, py = (drag.y0 - rect.top) / drag.scale;
+    // Which cell of the tile was grabbed, so the tile moves with the pointer.
+    const anchor = drag.meta.tile;
+    drag.grab = {
+      dx: Math.floor(px / geo.cellW) - ((anchor - 1) % cols),
+      dy: Math.floor(py / geo.cellH) - Math.floor((anchor - 1) / cols),
+    };
+    drag.me = this._placed(view, drag.screen).find((p) => p.index === drag.meta.index);
+    drag.node.classList.add("dragging");
+    drag.marker = el("div", { class: "drop-marker" });
+    canvas.append(drag.marker);
+    this._dragTo(drag, drag.x0, drag.y0);
+  }
+
+  _dragTo(drag, x, y) {
+    const { canvas, geo, me } = drag;
+    if (!canvas || !me) return;
+    const rect = canvas.getBoundingClientRect();
+    const col = Math.floor((x - rect.left) / drag.scale / geo.cellW) - drag.grab.dx;
+    const row = Math.floor((y - rect.top) / drag.scale / geo.cellH) - drag.grab.dy;
+    const inside = col >= 0 && row >= 0 && col < geo.cols && row < geo.rows;
+    drag.anchor = inside ? row * geo.cols + col + 1 : null;
+    const result = inside ? this._dropAt(this._view, drag.screen, drag.meta.index, drag.anchor) : { ok: false };
+    drag.ok = result.ok;
+    Object.assign(drag.marker.style, {
+      left: `${Math.max(0, col) * geo.cellW + geo.pad}px`,
+      top: `${Math.max(0, row) * geo.cellH + geo.pad}px`,
+      width: `${me.w * geo.cellW - 2 * geo.pad}px`,
+      height: `${me.h * geo.cellH - 2 * geo.pad}px`,
+      display: inside ? "block" : "none",
+    });
+    drag.marker.classList.toggle("ok", !!result.ok);
+    drag.marker.classList.toggle("same", !!result.same);
+  }
+
+  _dragFinish(drag, drop) {
+    drag.node.classList.remove("dragging");
+    drag.marker?.remove();
+    this._dragEndedAt = Date.now();
+    if (drop && drag.anchor) this._move(drag.screen, drag.meta.index, drag.anchor);
+  }
+
+  // ── screens ───────────────────────────────────────────────────────────
+  async _openScreen(screenNumber) {
+    if (FORM_MODES.has(this._sheetMode) && (this._form || this._screenForm)) {
+      this._say("Finish or cancel the open form first.", true);
+      return;
+    }
+    const view = this._view;
+    const key = String(screenNumber);
+    this._moving = null;
+    this._selected = { kind: "screen", screen: screenNumber };
+    this._sheetMode = "screen";
+    this._screenForm = {
+      screen: screenNumber,
+      data: {
+        name: view.screen_names?.[key] || "",
+        color: view.screen_colors?.[key] || [0, 0, 0],
+      },
+      ready: null,
+    };
+    this._markSelected();
+    this._renderSheet();
+    this._screenForm.ready = await ensureHaForm();
+    if (this._sheetMode === "screen") this._renderSheet();
+    if (this._narrow) this._sheetEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  _renderScreenForm() {
+    const sheet = this._sheetEl;
+    const form = this._screenForm;
+    sheet.append(
+      el("h3", {}, `Screen ${form.screen}`),
+      el("p", { class: "hint" }, "Its name shows at the foot of the screen on the panel.")
+    );
+    if (form.ready === null) {
+      sheet.append(el("p", { class: "hint" }, "Loading the form…"));
+      return;
+    }
+    if (!form.ready) {
+      sheet.append(
+        el("p", { class: "hint error" }, "Home Assistant's form fields didn't load on this page. Reload the page, or use the panel's Configure dialog."),
+        el("div", { class: "actions" }, el("button", { onclick: () => this._closeScreen() }, "Back"))
+      );
+      return;
+    }
+    const labels = { name: "Name", color: "Background colour" };
+    const helpers = {
+      name: "Leave blank to show the panel's name.",
+      color: "Black means no colour of its own: the screen follows the panel's background colour.",
+    };
+    const haForm = document.createElement("ha-form");
+    haForm.computeLabel = (field) => labels[field.name];
+    haForm.computeHelper = (field) => helpers[field.name];
+    haForm.hass = this._hass;
+    haForm.schema = [
+      { name: "name", selector: { text: {} } },
+      { name: "color", selector: { color_rgb: {} } },
+    ];
+    haForm.data = form.data;
+    haForm.addEventListener("value-changed", (e) => {
+      form.data = e.detail.value;
+    });
+    this._haForm = haForm;
+    sheet.append(haForm, el(
+      "div",
+      { class: "actions" },
+      el("button", { class: "primary", onclick: () => this._saveScreen() }, "Save"),
+      el("button", { onclick: () => this._closeScreen() }, "Cancel")
+    ));
+  }
+
+  _closeScreen() {
+    this._screenForm = null;
+    this._sheetMode = null;
+    this._selected = null;
+    if (this._draft && !this._draft.changes) this._clearDraft();
+    this._markSelected();
+    this._renderSheet();
+  }
+
+  async _saveScreen() {
+    const form = this._screenForm;
+    const draft = this._startDraft();
+    const key = String(form.screen);
+    const names = clone(draft.screen_names);
+    const colours = clone(draft.screen_colors);
+    const name = String(form.data.name || "").trim();
+    if (name) names[key] = name;
+    else delete names[key];
+    const colourValue = Array.isArray(form.data.color) ? form.data.color.map(Number) : [0, 0, 0];
+    // Pure black is the firmware's "no colour": the screen follows the panel's.
+    if (colourValue.some((c) => c)) colours[key] = colourValue;
+    else delete colours[key];
+    this._screenForm = null;
+    if (JSON.stringify(names) === JSON.stringify(draft.screen_names) && JSON.stringify(colours) === JSON.stringify(draft.screen_colors)) {
+      return this._closeScreen(); // nothing changed
+    }
+    await this._commit({ screen_names: names, screen_colors: colours }, null);
+    this._say(`Changed screen ${form.screen}. Not on the panel until you apply.`);
   }
 
   // ── picking and the side sheet ────────────────────────────────────────
   _pick(selection) {
-    if ((this._sheetMode === "form" || this._sheetMode === "playlists") && this._form) {
+    if (Date.now() - (this._dragEndedAt || 0) < 400) return; // the click that ends a drag
+    if (this._sheetMode === "move" && this._moving) return this._moveTo(selection);
+    if (FORM_MODES.has(this._sheetMode) && (this._form || this._screenForm)) {
       this._say("Finish or cancel the open form first.", true);
       return;
     }
@@ -702,12 +1086,24 @@ class OxrsPanelEditor extends HTMLElement {
     this._haForm = null;
     const view = this._view;
     const s = this._selected;
+    // Move mode stands on its own: it must show whatever happened to the selection.
+    if (this._sheetMode === "move" && this._moving) {
+      add(
+        sheet,
+        el("h3", {}, `Move ${this._moving.label}`),
+        el("p", { class: "hint" }, "Tap where it should go: an outlined space, or a tile of the same size to swap with."),
+        el("div", { class: "actions" }, el("button", { onclick: () => this._cancelMove() }, "Cancel"))
+      );
+      return;
+    }
     if (!view || !s) {
-      sheet.append(el("p", { class: "hint" }, "Tap a tile to change or remove it, or an empty space to add a tile there. Swipe, or use the arrows, to change screens; the last screen is a new one."));
+      sheet.append(el("p", { class: "hint" }, "Tap a tile to change, move or remove it, or an empty space to add a tile there. Drag a tile to move it (on a phone: press and hold it first). Tap a screen's name to rename or recolour it. Swipe, or use the arrows, to change screens; the last screen is a new one."));
       return;
     }
     if (this._sheetMode === "form" || this._sheetMode === "playlists") return this._renderForm();
+    if (this._sheetMode === "screen" && this._screenForm) return this._renderScreenForm();
     if (s.kind === "empty") return this._renderTypes(s);
+    if (s.kind === "screen") return;
     this._renderTileInfo(view, s);
   }
 
@@ -737,6 +1133,7 @@ class OxrsPanelEditor extends HTMLElement {
         meta.type
           ? el("button", { class: "primary", onclick: () => this._openForm({ index: meta.index }) }, "Edit")
           : null,
+        el("button", { onclick: () => this._startMove(meta) }, "Move"),
         el("button", { class: "danger", onclick: () => this._remove(meta) }, "Remove")
       ),
       meta.type ? null : el("p", { class: "hint" }, "This is an older action tile. It can be removed here, but not edited.")
@@ -768,7 +1165,7 @@ class OxrsPanelEditor extends HTMLElement {
   async _remove(meta) {
     const draft = this._startDraft();
     const tiles = draft.tiles.filter((_, i) => i !== meta.index);
-    await this._commit(tiles, `Removed ${meta.label || meta.type_label}`);
+    await this._commit({ tiles }, `Removed ${meta.label || meta.type_label}`);
   }
 
   // ── the tile form ─────────────────────────────────────────────────────
@@ -934,7 +1331,7 @@ class OxrsPanelEditor extends HTMLElement {
     if (target.index !== undefined) tiles[target.index] = result.tile;
     else tiles.push(result.tile);
     const name = result.tile.label || form.spec.type_label;
-    await this._commit(tiles, null);
+    await this._commit({ tiles }, null);
     this._say(`${target.index !== undefined ? "Changed" : "Added"} ${name}. Not on the panel until you apply.`);
   }
 
@@ -989,6 +1386,14 @@ select { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid 
 .slide { flex: 0 0 100%; scroll-snap-align: start; display: flex; flex-direction: column; align-items: center; padding: 0 8px; box-sizing: border-box; }
 .screen-name { font-size: 15px; margin-bottom: 8px; align-self: center; }
 .screen-name span { color: var(--secondary-text-color); }
+.screen-name.editable { font: inherit; font-size: 15px; background: transparent; border: 0; color: var(--primary-text-color); cursor: pointer; padding: 2px 8px; border-radius: 6px; }
+.screen-name.editable:hover { background: var(--divider-color); }
+.tile { touch-action: pan-x pan-y; -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
+.tile.dragging, .tile.moving { opacity: 0.45; }
+.tile.drop-ok, .empty.drop-ok { outline: 3px dashed var(--success-color, #4caf50); outline-offset: 2px; }
+.drop-marker { position: absolute; display: none; border-radius: 5px; border: 3px dashed var(--error-color); background: rgba(219, 68, 55, 0.15); pointer-events: none; box-sizing: border-box; }
+.drop-marker.ok { border-color: var(--success-color, #4caf50); background: rgba(76, 175, 80, 0.2); }
+.drop-marker.same { border-color: rgba(255,255,255,0.4); background: transparent; }
 .frame { position: relative; overflow: hidden; border-radius: 12px; box-shadow: 0 0 0 1px var(--divider-color); }
 .screen { position: absolute; top: 0; left: 0; transform-origin: 0 0; font-family: Montserrat, Roboto, sans-serif; }
 .tile, .empty { position: absolute; padding: 0; margin: 0; border: 0; border-radius: 5px; overflow: hidden; cursor: pointer; background: transparent; font: inherit; text-align: left; }

@@ -46,7 +46,10 @@ on/off state, labels and album art - and lets you change them:
 
 - Swipe, or use the arrows, to move between screens. The last screen is a new, empty one.
 - Tap an empty space to add a tile there, choosing its type, entity, label, icon and size.
-- Tap a tile to edit or remove it.
+- Tap a tile to edit, move or remove it.
+- Drag a tile to move it (on a phone, press and hold it first). Dropping it on a tile of the
+  same size swaps the two.
+- Tap a screen's name to rename it or give it its own background colour.
 
 Changes are staged until you press **Apply to panel**, which sends them to the panel in
 one go (or **Discard** to drop them). Panel settings, background images and custom icons

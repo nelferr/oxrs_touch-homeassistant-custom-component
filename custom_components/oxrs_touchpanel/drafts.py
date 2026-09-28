@@ -23,10 +23,85 @@ from .tiles import TILE_TYPES
 MAX_SCREEN = 32
 
 
-def fingerprint(tiles: list[dict[str, Any]]) -> str:
-    """Identifies a tile list, so an apply can tell the stored tiles changed meanwhile."""
-    blob = json.dumps(tiles, sort_keys=True, ensure_ascii=True, default=str)
+def fingerprint(value: Any) -> str:
+    """Identifies what an apply will replace, so it can tell it changed meanwhile."""
+    blob = json.dumps(value, sort_keys=True, ensure_ascii=True, default=str)
     return hashlib.sha1(blob.encode("utf-8")).hexdigest()
+
+
+def layout_fingerprint(
+    tiles: list[dict[str, Any]], screen_names: Any, screen_colors: Any
+) -> str:
+    """The fingerprint of everything the editor page saves: tiles, screen names and colours."""
+    return fingerprint(
+        {"tiles": tiles, "screen_names": screen_names or {}, "screen_colors": screen_colors or {}}
+    )
+
+
+def _is_screen_key(key: Any) -> bool:
+    return isinstance(key, str) and key.isdigit() and 1 <= int(key) <= MAX_SCREEN
+
+
+def _is_colour(value: Any) -> bool:
+    return (
+        isinstance(value, (list, tuple))
+        and len(value) == 3
+        and all(_is_int(c) and 0 <= c <= 255 for c in value)
+    )
+
+
+def screens_problems(
+    screen_names: Any,
+    screen_colors: Any,
+    stored_names: dict[str, Any] | None = None,
+    stored_colors: dict[str, Any] | None = None,
+) -> list[str]:
+    """Everything wrong with the screen names and colours sent; empty when they can be saved.
+
+    An entry the same as the stored one passes as it is, as untouched tiles do, so a
+    hand-edited value already in the options cannot block every save.
+    """
+    stored_names = stored_names or {}
+    stored_colors = stored_colors or {}
+    problems: list[str] = []
+    if not isinstance(screen_names, dict):
+        problems.append("Screen names were not a mapping.")
+    else:
+        for key, name in screen_names.items():
+            if stored_names.get(key) == name:
+                continue
+            if not _is_screen_key(key) or not isinstance(name, str):
+                problems.append(f"Screen name for {key!r} is not valid.")
+    if not isinstance(screen_colors, dict):
+        problems.append("Screen colours were not a mapping.")
+    else:
+        for key, colour in screen_colors.items():
+            if stored_colors.get(key) == colour:
+                continue
+            if not _is_screen_key(key) or not _is_colour(colour):
+                problems.append(f"Screen colour for {key!r} is not valid.")
+    return problems
+
+
+def clean_screens(
+    screen_names: dict[str, str], screen_colors: dict[str, Any]
+) -> tuple[dict[str, str], dict[str, list[int]]]:
+    """Screen names and colours as the dialog stores them.
+
+    A blank name is dropped (the screen then shows the panel's title), and so is pure
+    black: the firmware reads it as "no colour, follow the panel", so it is never kept.
+    """
+    names = {
+        k: v.strip() if isinstance(v, str) else v
+        for k, v in screen_names.items()
+        if not isinstance(v, str) or v.strip()
+    }
+    colours = {
+        k: [int(c) for c in v] if _is_colour(v) else v
+        for k, v in screen_colors.items()
+        if not _is_colour(v) or any(v)
+    }
+    return names, colours
 
 
 def _key(tile: Any) -> str:

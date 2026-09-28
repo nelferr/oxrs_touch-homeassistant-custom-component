@@ -41,6 +41,8 @@ from .const import (
     CONF_LABEL,
     CONF_PLAYLISTS,
     CONF_SCREEN,
+    CONF_SCREEN_COLORS,
+    CONF_SCREEN_NAMES,
     CONF_SPAN,
     CONF_TILE,
     CONF_TILES,
@@ -50,7 +52,7 @@ from .const import (
     LIBRARY_DATA_KEY,
     MAX_PLAYLISTS,
 )
-from .drafts import draft_problems, fingerprint
+from .drafts import clean_screens, draft_problems, layout_fingerprint, screens_problems
 from .grid import (
     FOOTER_HEIGHT,
     ONE,
@@ -146,17 +148,35 @@ def _data_uri(item: dict[str, Any], fallback_format: str = "png") -> str:
     return f"data:image/{fmt};base64,{item['data']}"
 
 
+def _stored_screens(panel: Any) -> tuple[dict[str, str], dict[str, Any]]:
+    names = panel.entry.options.get(CONF_SCREEN_NAMES) or {}
+    colours = panel.entry.options.get(CONF_SCREEN_COLORS) or {}
+    return (
+        dict(names) if isinstance(names, dict) else {},
+        dict(colours) if isinstance(colours, dict) else {},
+    )
+
+
 def panel_view(
-    hass: HomeAssistant, entry_id: str, panel: Any, tiles: list[dict[str, Any]] | None = None
+    hass: HomeAssistant,
+    entry_id: str,
+    panel: Any,
+    tiles: list[dict[str, Any]] | None = None,
+    screen_names: dict[str, str] | None = None,
+    screen_colors: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Everything the editor draws for one panel.
 
-    tiles, when given, is an unsaved draft: it is drawn through the same hub code
-    as the stored tiles, so the preview is what applying it would send.
+    tiles, screen_names and screen_colors, when given, are an unsaved draft: it is
+    drawn through the same hub code as the stored config, so the preview is what
+    applying it would send.
     """
     stored = panel.tiles
+    stored_names, stored_colours = _stored_screens(panel)
     tiles = stored if tiles is None else tiles
-    conf = panel.build_conf(tiles)
+    names = stored_names if screen_names is None else screen_names
+    colours = stored_colours if screen_colors is None else screen_colors
+    conf = panel.build_conf(tiles, screen_names=names, screen_colors=colours)
     states = panel.build_tile_states(tiles)
     cols, rows = panel.layout["horizontal"], panel.layout["vertical"]
     hardware = getattr(panel, "_reported_hardware", None) or panel.hardware
@@ -214,7 +234,13 @@ def panel_view(
         # The stored tiles, which a draft starts from, and their fingerprint, which
         # an apply checks so it cannot overwrite a change made in the dialog.
         "config_tiles": stored,
-        "fingerprint": fingerprint(stored),
+        "config_screen_names": stored_names,
+        "config_screen_colors": stored_colours,
+        "fingerprint": layout_fingerprint(stored, stored_names, stored_colours),
+        # The screens' own names and colours as drawn (the conf's label falls back to
+        # the panel title, so the page needs the raw values to edit them).
+        "screen_names": names,
+        "screen_colors": colours,
         "images": images,
         "icons": icons,
         "art": art,
@@ -410,20 +436,28 @@ def _errors(err: vol.Invalid) -> dict[str, str]:
     }
 
 
-_DRAFT = {vol.Required("entry_id"): str, vol.Required("tiles"): [dict]}
+_DRAFT = {
+    vol.Required("entry_id"): str,
+    vol.Required("tiles"): [dict],
+    # Screen names and colours, as stored ({"<screen>": ...}); absent means unchanged.
+    vol.Optional("screen_names"): dict,
+    vol.Optional("screen_colors"): dict,
+}
 
 
 @websocket_api.websocket_command({vol.Required("type"): WS_PREVIEW, **_DRAFT})
 @websocket_api.require_admin
 @callback
 def ws_preview(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
-    """A panel drawn with a draft's tiles instead of the stored ones."""
+    """A panel drawn with a draft's tiles and screens instead of the stored ones."""
     panel = _panel(hass, msg["entry_id"])
     if panel is None:
         connection.send_error(msg["id"], "not_found", "That panel is not set up and running.")
         return
     try:
-        view = panel_view(hass, msg["entry_id"], panel, msg["tiles"])
+        view = panel_view(
+            hass, msg["entry_id"], panel, msg["tiles"], msg.get("screen_names"), msg.get("screen_colors")
+        )
     except Exception as err:  # noqa: BLE001 - a bad draft must not break the page
         _LOGGER.exception("Could not preview a draft for %s", panel.entry.title)
         connection.send_error(msg["id"], "preview_failed", f"Couldn't draw these changes: {err}")
@@ -595,25 +629,31 @@ async def ws_build_tile(hass: HomeAssistant, connection: websocket_api.ActiveCon
 @websocket_api.require_admin
 @callback
 def ws_apply(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
-    """Save a draft's tiles. The entry reloads and the panel is sent them once."""
+    """Save a draft's tiles and screens. The entry reloads and the panel is sent them once."""
     panel = _panel(hass, msg["entry_id"])
     if panel is None:
         connection.send_error(msg["id"], "not_found", "That panel is not set up and running.")
         return
-    if fingerprint(panel.tiles) != msg["fingerprint"]:
+    stored_names, stored_colours = _stored_screens(panel)
+    if layout_fingerprint(panel.tiles, stored_names, stored_colours) != msg["fingerprint"]:
         connection.send_error(
             msg["id"],
             "changed_elsewhere",
-            "This panel's tiles were changed somewhere else since this page loaded them. "
-            "Discard these changes and make them again.",
+            "This panel's tiles or screens were changed somewhere else since this page loaded "
+            "them. Discard these changes and make them again.",
         )
         return
+    names = msg.get("screen_names", stored_names)
+    colours = msg.get("screen_colors", stored_colours)
     cols, rows = panel.layout["horizontal"], panel.layout["vertical"]
-    problems = draft_problems(panel.tiles, msg["tiles"], cols, rows)
+    problems = draft_problems(panel.tiles, msg["tiles"], cols, rows) + screens_problems(names, colours, stored_names, stored_colours)
     if problems:
         connection.send_error(msg["id"], "invalid", " ".join(problems))
         return
+    names, colours = clean_screens(names, colours)
     options = dict(panel.entry.options)
     options[CONF_TILES] = msg["tiles"]
+    options[CONF_SCREEN_NAMES] = names
+    options[CONF_SCREEN_COLORS] = colours
     hass.config_entries.async_update_entry(panel.entry, options=options)
     connection.send_result(msg["id"], {"ok": True})
