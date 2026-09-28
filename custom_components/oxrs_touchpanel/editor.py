@@ -18,7 +18,9 @@ the page loaded them. The panel settings (timeouts, brightness, colours, tempera
 correction, album art) work the same way: the dialog's own forms, staged, previewed,
 applied. The background images and custom icons are a library shared by every panel,
 so adding or deleting one there takes effect at once, as it does in the dialog.
-The Device sheet restarts the panel and updates its firmware (firmware.py).
+The Device sheet restarts the panel and updates its firmware (firmware.py), or deletes
+it; panels Home Assistant has found on MQTT can be added from the page. Favourite tiles
+and the setups used most (favourites.py) fill an empty place quickly.
 """
 
 from __future__ import annotations
@@ -39,7 +41,7 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import selector
 
-from . import firmware
+from . import favourites, firmware
 from .boards import screen_size
 from .const import (
     ALBUM_ART_SETTINGS_KEYS,
@@ -106,6 +108,12 @@ WS_LIBRARY_DELETE = f"{DOMAIN}/editor/library_delete"
 WS_DEVICE = f"{DOMAIN}/editor/device"
 WS_RESTART = f"{DOMAIN}/editor/restart"
 WS_FIRMWARE_INSTALL = f"{DOMAIN}/editor/firmware_install"
+WS_ADD_DISCOVERED = f"{DOMAIN}/editor/add_discovered"
+WS_DELETE_PANEL = f"{DOMAIN}/editor/delete_panel"
+WS_SUGGESTIONS = f"{DOMAIN}/editor/suggestions"
+WS_FAVOURITES = f"{DOMAIN}/editor/favourites"
+WS_FAVOURITE_ADD = f"{DOMAIN}/editor/favourite_add"
+WS_FAVOURITE_REMOVE = f"{DOMAIN}/editor/favourite_remove"
 
 # The background image field, as the dialog's background step names it.
 BACKGROUND_FIELD = "background_image_name"
@@ -143,6 +151,12 @@ async def async_setup_editor(hass: HomeAssistant, version: str) -> None:
             ws_device,
             ws_restart,
             ws_firmware_install,
+            ws_add_discovered,
+            ws_delete_panel,
+            ws_suggestions,
+            ws_favourites,
+            ws_favourite_add,
+            ws_favourite_remove,
         ):
             websocket_api.async_register_command(hass, handler)
         hass.data[_REGISTERED] = True
@@ -313,7 +327,14 @@ def ws_panels(hass: HomeAssistant, connection: websocket_api.ActiveConnection, m
             panels.append(panel_view(hass, entry_id, panel))
         except Exception:  # noqa: BLE001 - one broken panel must not blank the page
             _LOGGER.exception("Could not build the editor view of %s", panel.entry.title)
-    connection.send_result(msg["id"], {"panels": panels, "types": tile_types(hass)})
+    try:
+        discovered = discovered_panels(hass)
+    except Exception:  # noqa: BLE001 - the panels must show even if this can't be read
+        _LOGGER.exception("Could not list the panels waiting to be added")
+        discovered = []
+    connection.send_result(
+        msg["id"], {"panels": panels, "types": tile_types(hass), "discovered": discovered}
+    )
 
 
 # ── editing ───────────────────────────────────────────────────────────────
@@ -542,7 +563,16 @@ _TARGET = {
 }
 
 
-@websocket_api.websocket_command({vol.Required("type"): WS_TILE_FORM, **_DRAFT, **_TARGET, vol.Optional("tile_type"): str})
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): WS_TILE_FORM,
+        **_DRAFT,
+        **_TARGET,
+        vol.Optional("tile_type"): str,
+        # A new tile's form can start from a favourite or a frequently used setup.
+        vol.Optional("template"): dict,
+    }
+)
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_tile_form(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
@@ -563,7 +593,11 @@ async def ws_tile_form(hass: HomeAssistant, connection: websocket_api.ActiveConn
     flow = _flow(hass, panel, tiles)
     schema = _form_schema(flow, target)
     labels = await _labels(hass)
-    current = tile_span((target.current or {}).get(CONF_SPAN))
+    serialized = serialize_schema(schema)
+    template = msg.get("template") if target.current is None else None
+    if template:
+        _prefill(serialized, template)
+    current = tile_span((target.current or template or {}).get(CONF_SPAN))
     connection.send_result(
         msg["id"],
         {
@@ -571,7 +605,7 @@ async def ws_tile_form(hass: HomeAssistant, connection: websocket_api.ActiveConn
             "type_label": TILE_TYPES[target.type]["label"],
             "screen": target.screen,
             "position": target.position,
-            "schema": serialize_schema(schema),
+            "schema": serialized,
             "sizes": sizes,
             "size": size_value(current if size_value(current) in {s["value"] for s in sizes} else ONE),
             "playlists": target.type == "playlists",
@@ -1174,3 +1208,190 @@ async def ws_firmware_install(hass: HomeAssistant, connection: websocket_api.Act
 
     hass.async_create_task(run(), f"{DOMAIN} firmware update {panel.client_id}")
     connection.send_result(msg["id"], {"started": True})
+
+
+# ── panels found on MQTT, and deleting a panel ───────────────────────────
+
+
+def discovered_panels(hass: HomeAssistant) -> list[dict[str, Any]]:
+    """Panels Home Assistant found on MQTT and is waiting to be told to add."""
+    found = []
+    for flow in hass.config_entries.flow.async_progress_by_handler(DOMAIN):
+        context = flow.get("context") or {}
+        if context.get("source") != "mqtt" or flow.get("step_id") != "confirm":
+            continue
+        placeholders = context.get("title_placeholders") or {}
+        found.append(
+            {
+                "flow_id": flow["flow_id"],
+                "client_id": context.get("unique_id") or placeholders.get("name"),
+                "board": placeholders.get("board"),
+            }
+        )
+    return found
+
+
+@websocket_api.websocket_command({vol.Required("type"): WS_ADD_DISCOVERED, vol.Required("flow_id"): str})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_add_discovered(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """Add a panel Home Assistant discovered, as confirming it in Settings does."""
+    if msg["flow_id"] not in {f["flow_id"] for f in discovered_panels(hass)}:
+        connection.send_error(msg["id"], "not_found", "That panel is no longer waiting to be added.")
+        return
+    result = await hass.config_entries.flow.async_configure(msg["flow_id"], {})
+    if result.get("type") != "create_entry":
+        connection.send_error(msg["id"], "not_added", f"The panel was not added ({result.get('reason') or result.get('type')}).")
+        return
+    connection.send_result(msg["id"], {"entry_id": getattr(result.get("result"), "entry_id", None), "title": result.get("title")})
+
+
+@websocket_api.websocket_command({vol.Required("type"): WS_DELETE_PANEL, vol.Required("entry_id"): str})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_delete_panel(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """Delete a panel, as deleting it on the integration page does (its retained MQTT
+    messages are cleared by async_remove_entry)."""
+    entry = hass.config_entries.async_get_entry(msg["entry_id"])
+    if entry is None or entry.domain != DOMAIN:
+        connection.send_error(msg["id"], "not_found", "That panel is not set up.")
+        return
+    await hass.config_entries.async_remove(msg["entry_id"])
+    connection.send_result(msg["id"], {"ok": True})
+
+
+# ── favourites and frequently used setups ────────────────────────────────
+
+
+def _suggestion(hass: HomeAssistant, tile: dict[str, Any], fits: bool) -> dict[str, Any]:
+    definition = TILE_TYPES[tile[CONF_TYPE]]
+    entity_id = tile.get(CONF_ENTITY_ID)
+    entity = hass.states.get(entity_id) if isinstance(entity_id, str) else None
+    name = tile.get(CONF_LABEL) or (entity.attributes.get("friendly_name") if entity else None) or entity_id or ""
+    w, h = tile_span(tile.get(CONF_SPAN))
+    icon = tile.get(CONF_ICON) or definition["icon"]
+    library = hass.data.get(LIBRARY_DATA_KEY)
+    # A custom icon's picture, since this panel's view only carries the icons it uses.
+    found = library.get_icon_by_name(icon) if library and not str(icon).startswith("_") else None
+    return {
+        "tile": tile,
+        "type": tile[CONF_TYPE],
+        "type_label": definition["label"],
+        "icon": icon,
+        "icon_uri": _data_uri(found) if found and found.get("data") else None,
+        "name": name,
+        "size": [w, h],
+        "fits": fits,
+    }
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): WS_SUGGESTIONS,
+        vol.Required("entry_id"): str,
+        vol.Required("tiles"): [dict],
+        vol.Optional("screen"): int,
+        vol.Optional("position"): int,
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_suggestions(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """Favourites and the setups used most, and whether each fits at a free place.
+
+    The draft's tiles stand in for this panel's stored ones, so a tile just added
+    counts. A type this Home Assistant can't offer now (playlists without Music
+    Assistant) is left out; one too big for the place is marked, not left out.
+    """
+    panel = _panel(hass, msg["entry_id"])
+    if panel is None:
+        connection.send_error(msg["id"], "not_found", "That panel is not set up and running.")
+        return
+    offered = {t["type"] for t in tile_types(hass)}
+    fitting: set[str] | None = None
+    screen, position = msg.get("screen"), msg.get("position")
+    if screen is not None and position is not None:
+        cols, rows = panel.layout["horizontal"], panel.layout["vertical"]
+        taken = occupied(msg["tiles"], screen, cols, rows)
+        if 1 <= position <= cols * rows and position not in taken:
+            fitting = {size_value(s) for s in fitting_sizes(position, taken, cols, rows)}
+
+    def fits(tile: dict[str, Any]) -> bool:
+        return fitting is None or size_value(tile_span(tile.get(CONF_SPAN))) in fitting
+
+    store = await favourites.async_get(hass)
+    all_tiles = [
+        tile
+        for entry_id, other in (hass.data.get(DOMAIN) or {}).items()
+        for tile in (msg["tiles"] if entry_id == msg["entry_id"] else other.tiles)
+    ]
+    connection.send_result(
+        msg["id"],
+        {
+            "favourites": [
+                {"id": item["id"], **_suggestion(hass, item["tile"], fits(item["tile"]))}
+                for item in store.items
+                if item["tile"].get(CONF_TYPE) in offered
+            ],
+            "frequent": [
+                {"count": entry["count"], **_suggestion(hass, entry["tile"], fits(entry["tile"]))}
+                for entry in favourites.frequent(t for t in all_tiles if t.get(CONF_TYPE) in offered)
+            ],
+        },
+    )
+
+
+@websocket_api.websocket_command({vol.Required("type"): WS_FAVOURITE_ADD, vol.Required("tile"): dict})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_favourite_add(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """Keep a tile (as it is in the draft) as a favourite, for every panel."""
+    store = await favourites.async_get(hass)
+    try:
+        item, new = await store.async_add(msg["tile"])
+    except ValueError as err:
+        connection.send_error(msg["id"], "invalid", str(err))
+        return
+    connection.send_result(msg["id"], {"id": item["id"], "new": new})
+
+
+@websocket_api.websocket_command({vol.Required("type"): WS_FAVOURITE_REMOVE, vol.Required("item_id"): str})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_favourite_remove(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """Stop keeping a favourite. Tiles placed from it are not affected."""
+    store = await favourites.async_get(hass)
+    if not await store.async_remove(msg["item_id"]):
+        connection.send_error(msg["id"], "not_found", "That is no longer a favourite.")
+        return
+    connection.send_result(msg["id"], {"ok": True})
+
+
+@websocket_api.websocket_command({vol.Required("type"): WS_FAVOURITES})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_favourites(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """The favourites as kept, so the page can tell whether a tile is one."""
+    store = await favourites.async_get(hass)
+    connection.send_result(msg["id"], {"items": store.items})
+
+
+def _prefill(schema: list[dict[str, Any]], template: dict[str, Any]) -> None:
+    """Start a new tile's serialized form on a template's values.
+
+    Only what the form can show, and only values the form would accept (an icon or
+    image that has left the library is not pre-filled): submitting still goes through
+    the form's own validation, as for any new tile.
+    """
+    for field in schema:
+        name = field["name"]
+        if name not in template or template[name] in (None, ""):
+            continue
+        value = template[name]
+        options = (field.get("selector") or {}).get("select", {}).get("options")
+        if options is not None and value not in {
+            o["value"] if isinstance(o, dict) else o for o in options
+        }:
+            continue
+        field.pop("description", None)
+        field["default"] = value

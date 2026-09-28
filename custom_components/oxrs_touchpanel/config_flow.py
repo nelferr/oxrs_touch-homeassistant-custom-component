@@ -257,7 +257,7 @@ class OxrsConfigFlow(ConfigFlow, domain=DOMAIN):
         self._client_id = client_id
         # The adopt message names the board, which decides the panel's tile grid.
         self._hardware = hardware_from_adopt(discovery_info.payload)
-        self.context["title_placeholders"] = {"name": client_id}
+        self.context["title_placeholders"] = {"name": client_id, "board": describe(self._hardware)}
         return await self.async_step_confirm()
 
     async def async_step_confirm(

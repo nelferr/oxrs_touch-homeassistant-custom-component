@@ -1020,5 +1020,21 @@ view, which was removed.
   `update` platform (`update.py`, device class firmware) offers the latest stable
   release in HA's own update UI through the same code; the page can also pick a
   pre-release or an older version.
+- **Found panels, deleting, favourites (v2.6.0).** Panels found on MQTT: the discovery
+  flows of this domain waiting at "confirm" (`editor.discovered_panels`; the mqtt step
+  now puts the board in its title placeholders) come with `editor/panels`; "Add panel"
+  (`editor/add_discovered`) confirms the flow through `flow.async_configure`, as Settings
+  does. Delete (`editor/delete_panel`, Device sheet, confirmed) is
+  `config_entries.async_remove`, so `async_remove_entry` clears the retained MQTT
+  messages as it does from the integration page. Favourites (`favourites.py`, own Store
+  `oxrs_touchpanel_favourites`, shared by every panel, max 60): the tile less screen /
+  tile; the same tile elsewhere is the same favourite; old action tiles can't be one.
+  Frequently used: every panel's tiles (the draft for this one) grouped by
+  `setup_of` - less place and binding (entity_id, action_entity, sublabel and second
+  sensor, playlists, label) - most first, 8 shown. `editor/suggestions` returns both with
+  `fits` for the chosen free place (`fitting_sizes`); `editor/tile_form` takes a
+  `template` for a new tile and pre-fills the serialized form with it (`_prefill`: only
+  values the form offers), choosing the template's size when it fits. Submitting is the
+  ordinary `build_tile`, so a placed favourite is checked like any new tile.
 - **Not yet:** nothing from the dialog is left out; the dialog stays for those who prefer it.
 

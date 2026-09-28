@@ -37,6 +37,12 @@ const WS = {
   device: "oxrs_touchpanel/editor/device",
   restart: "oxrs_touchpanel/editor/restart",
   firmwareInstall: "oxrs_touchpanel/editor/firmware_install",
+  addDiscovered: "oxrs_touchpanel/editor/add_discovered",
+  deletePanel: "oxrs_touchpanel/editor/delete_panel",
+  suggestions: "oxrs_touchpanel/editor/suggestions",
+  favourites: "oxrs_touchpanel/editor/favourites",
+  favouriteAdd: "oxrs_touchpanel/editor/favourite_add",
+  favouriteRemove: "oxrs_touchpanel/editor/favourite_remove",
 };
 // While a firmware update runs, how often the Device sheet asks how it is going.
 const DEVICE_POLL_MS = 2000;
@@ -94,6 +100,12 @@ function el(tag, attrs = {}, ...children) {
 }
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
+
+// A tile less its place: what a favourite keeps.
+function withoutPlace(tile) {
+  const { screen, tile: position, ...rest } = tile || {};
+  return rest;
+}
 
 // append() writes null as the text "null"; this skips empty slots, as el() does.
 function add(parent, ...children) {
@@ -235,7 +247,13 @@ class OxrsPanelEditor extends HTMLElement {
       const result = await this._hass.callWS({ type: WS.panels });
       this._panels = result.panels || [];
       this._types = result.types || [];
+      this._discovered = result.discovered || [];
       this._error = null;
+      try {
+        this._favourites = (await this._hass.callWS({ type: WS.favourites })).items || [];
+      } catch (err) {
+        this._favourites = this._favourites || [];
+      }
     } catch (err) {
       this._error = err?.message || String(err);
     }
@@ -339,6 +357,7 @@ class OxrsPanelEditor extends HTMLElement {
     this._sheetMode = null;
     this._form = null;
     this._settingsForm = null;
+    this._suggest = null; // counts and free places have changed
     await this._refreshPreview();
     if (label) this._offerUndo(before, label);
   }
@@ -363,6 +382,7 @@ class OxrsPanelEditor extends HTMLElement {
 
   async _doUndo() {
     if (!this._undo || !this._draft) return;
+    this._suggest = null;
     this._draft.tiles = this._undo.tiles;
     this._draft.screen_names = this._undo.screen_names;
     this._draft.screen_colors = this._undo.screen_colors;
@@ -447,6 +467,45 @@ class OxrsPanelEditor extends HTMLElement {
     this._renderAll();
   }
 
+  // Panels Home Assistant found on MQTT and has not been told to add yet.
+  _discoveredBanner() {
+    const found = this._discovered || [];
+    if (!found.length) return null;
+    return el(
+      "div",
+      { class: "found" },
+      found.map((f) =>
+        el(
+          "div",
+          { class: "found-row" },
+          el("span", {}, "New panel found: ", el("b", {}, f.client_id || "unnamed"), f.board ? ` · ${f.board}` : ""),
+          el("button", { class: "settings-button", disabled: this._adding === f.flow_id, onclick: () => this._addDiscovered(f) },
+            this._adding === f.flow_id ? "Adding…" : "Add panel")
+        )
+      )
+    );
+  }
+
+  async _addDiscovered(found) {
+    if (this._adding) return;
+    this._adding = found.flow_id;
+    this._renderStage();
+    try {
+      const result = await this._hass.callWS({ type: WS.addDiscovered, flow_id: found.flow_id });
+      this._say(`Added ${result.title || found.client_id}. It is sent its settings when it next connects.`);
+      await new Promise((resolve) => setTimeout(resolve, APPLY_SETTLE_MS));
+      await this._fetch();
+      // Show the new panel, unless there are changes to another one to deal with first.
+      const index = this._panels.findIndex((p) => p.entry_id === result.entry_id);
+      if (index >= 0 && !(this._draft && this._draft.changes)) this._switchPanel(index);
+    } catch (err) {
+      this._say(err?.message || String(err), true);
+      await this._fetch();
+    }
+    this._adding = null;
+    this._renderStage();
+  }
+
   _switchPanel(index) {
     if (this._draft && this._draft.changes) {
       // A draft belongs to one panel; switching away would lose it silently.
@@ -494,6 +553,7 @@ class OxrsPanelEditor extends HTMLElement {
     stage.replaceChildren();
     if (this._loading) return stage.append(el("div", { class: "message" }, "Loading panels…"));
     if (this._error) return stage.append(el("div", { class: "message error" }, `Couldn't load the panels: ${this._error}`));
+    add(stage, this._discoveredBanner());
     const view = this._view;
     if (!view) return stage.append(el("div", { class: "message" }, "No OXRS panel is set up and running."));
 
@@ -1767,7 +1827,50 @@ class OxrsPanelEditor extends HTMLElement {
       }
     }
     sheet.append(el("p", { class: "hint" }, el("a", { href: data.releases_url, target: "_blank", rel: "noreferrer" }, "All firmware releases on GitHub")));
+
+    // Delete
+    sheet.append(el("h4", { class: "section" }, "Delete panel"));
+    if (state.confirm === "delete") {
+      const pending = this._draft && this._draft.changes ? " The changes not yet applied to it are lost too." : "";
+      sheet.append(
+        el("p", { class: "hint error" },
+          `Delete ${data.title} from Home Assistant? Its tiles, screens and settings go, and its entities and device are removed. This can't be undone.${pending} ` +
+          "Its messages are cleared from MQTT; if the panel is still switched on, it will be found again and offered to add."),
+        el(
+          "div",
+          { class: "actions" },
+          el("button", { class: "danger", disabled: state.busy, onclick: () => this._deletePanel() }, "Delete panel"),
+          el("button", { onclick: () => { state.confirm = null; this._renderSheet(); } }, "Cancel")
+        )
+      );
+    } else {
+      sheet.append(el(
+        "div",
+        { class: "actions" },
+        el("button", { class: "danger", disabled: busy, onclick: () => { state.confirm = "delete"; this._renderSheet(); } }, "Delete panel…")
+      ));
+    }
     sheet.append(el("div", { class: "actions" }, el("button", { onclick: () => this._closeDevice() }, "Close")));
+  }
+
+  async _deletePanel() {
+    const state = this._deviceState;
+    const title = state.data?.title || "the panel";
+    state.busy = true;
+    this._renderSheet();
+    try {
+      await this._hass.callWS({ type: WS.deletePanel, entry_id: state.entryId });
+      if (this._draft && this._draft.entry_id === state.entryId) this._clearDraft();
+      this._closeDevice(false);
+      this._panelIndex = 0;
+      this._screenIndex = 0;
+      this._say(`Deleted ${title}.`);
+      await this._fetch();
+    } catch (err) {
+      state.busy = false;
+      this._say(err?.message || String(err), true);
+      this._renderSheet();
+    }
   }
 
   async _restartPanel() {
@@ -1892,15 +1995,157 @@ class OxrsPanelEditor extends HTMLElement {
         el("button", { onclick: () => this._startMove(meta) }, "Move"),
         el("button", { class: "danger", onclick: () => this._remove(meta) }, "Remove")
       ),
+      meta.type ? this._favouriteToggle(meta) : null,
       meta.type ? null : el("p", { class: "hint" }, "This is an older action tile. It can be removed here, but not edited.")
+    );
+  }
+
+  // The tile as it is now (in the draft if there is one).
+  _tileAt(index) {
+    const tiles = this._draft ? this._draft.tiles : this._stored?.config_tiles;
+    return tiles ? tiles[index] : null;
+  }
+
+  _favouriteOf(tile) {
+    if (!tile) return null;
+    const key = stable(withoutPlace(tile));
+    return (this._favourites || []).find((f) => stable(f.tile) === key) || null;
+  }
+
+  _favouriteToggle(meta) {
+    const tile = this._tileAt(meta.index);
+    const favourite = this._favouriteOf(tile);
+    return el(
+      "div",
+      { class: "actions" },
+      el(
+        "button",
+        {
+          class: favourite ? "fav on" : "fav",
+          title: favourite ? "Remove from favourites" : "Keep as a favourite, to place on any panel",
+          onclick: () => (favourite ? this._favouriteRemove(favourite.id) : this._favouriteAdd(tile)),
+        },
+        favourite ? "★ Favourite" : "☆ Add to favourites"
+      )
+    );
+  }
+
+  async _favouriteAdd(tile) {
+    try {
+      const result = await this._hass.callWS({ type: WS.favouriteAdd, tile });
+      this._say(result.new ? "Added to favourites. Tap an empty space on any panel to place it." : "It is already a favourite.");
+    } catch (err) {
+      this._say(err?.message || String(err), true);
+    }
+    await this._reloadFavourites();
+  }
+
+  async _favouriteRemove(id) {
+    try {
+      await this._hass.callWS({ type: WS.favouriteRemove, item_id: id });
+      this._say("Removed from favourites. Tiles already placed from it stay as they are.");
+    } catch (err) {
+      this._say(err?.message || String(err), true);
+    }
+    await this._reloadFavourites();
+  }
+
+  async _reloadFavourites() {
+    try {
+      this._favourites = (await this._hass.callWS({ type: WS.favourites })).items || [];
+    } catch (err) {
+      // keep the old list
+    }
+    this._suggest = null; // the picker reads them again
+    if (!FORM_MODES.has(this._sheetMode)) this._renderSheet();
+  }
+
+  // Favourites and the setups used most, for an empty place; read when the place is picked.
+  async _loadSuggestions(s) {
+    const key = `${this._stored?.entry_id}/${s.screen}/${s.tile}`;
+    if (this._suggest?.key === key && (this._suggest.data || this._suggest.loading)) return;
+    this._suggest = { key, loading: true, data: null };
+    try {
+      const data = await this._hass.callWS({
+        type: WS.suggestions,
+        entry_id: this._stored.entry_id,
+        tiles: this._draft ? this._draft.tiles : this._stored.config_tiles,
+        screen: s.screen,
+        position: s.tile,
+      });
+      if (this._suggest?.key === key) this._suggest = { key, data };
+    } catch (err) {
+      if (this._suggest?.key === key) this._suggest = { key, data: { favourites: [], frequent: [] }, error: err?.message || String(err) };
+    }
+    const now = this._selected;
+    if (now && now.kind === "empty" && `${this._stored?.entry_id}/${now.screen}/${now.tile}` === key && this._sheetMode === "types") {
+      this._renderSheet();
+    }
+  }
+
+  _suggestionCard(s, item, kind) {
+    const picture = item.icon_uri
+      ? el("span", { class: "type-icon", style: { maskImage: `url("${item.icon_uri}")`, webkitMaskImage: `url("${item.icon_uri}")` } })
+      : BUILTIN_ICONS.has(item.icon)
+        ? el("span", { class: "type-icon", style: { maskImage: `url("${this._static}/icons/${item.icon}.png")`, webkitMaskImage: `url("${this._static}/icons/${item.icon}.png")` } })
+        : el("span", { class: "type-icon blank" });
+    const size = item.size[0] * item.size[1] > 1 ? ` · ${item.size[0]} × ${item.size[1]}` : "";
+    const title = kind === "favourite" ? item.name || item.type_label : item.type_label;
+    // What sets a setup apart from another of its kind.
+    const tile = item.tile || {};
+    const marks = [
+      tile.icon && !String(tile.icon).startsWith("_") ? `icon ${tile.icon}` : null,
+      tile.background_image_name ? `image ${tile.background_image_name}` : null,
+      Array.isArray(tile.background_color) && tile.background_color.some((c) => c) ? "own colour" : null,
+      tile.album_art ? "album art" : null,
+    ].filter(Boolean).map((m) => ` · ${m}`).join("");
+    const detail = kind === "favourite" ? `${item.type_label}${size}${marks}` : `used ${item.count}×${size}${marks}`;
+    const swatch = Array.isArray(tile.background_color) && tile.background_color.some((c) => c)
+      ? el("span", { class: "swatch", style: { background: `rgb(${tile.background_color.join(",")})` } })
+      : null;
+    const card = el(
+      "button",
+      {
+        class: "type suggestion",
+        disabled: !item.fits,
+        title: item.fits ? "" : "Too big for this place",
+        onclick: () => this._openForm({ tileType: item.type, screen: s.screen, position: s.tile, template: item.tile, from: kind }),
+      },
+      picture,
+      el("span", { class: "suggestion-text" }, el("span", {}, title), el("span", { class: "suggestion-detail" }, item.fits ? detail : `${detail} · too big here`)),
+      swatch
+    );
+    if (kind !== "favourite") return card;
+    return el(
+      "div",
+      { class: "suggestion-row" },
+      card,
+      el("button", { class: "fav-remove", title: "Remove from favourites", "aria-label": "Remove from favourites", onclick: () => this._favouriteRemove(item.id) }, "✕")
     );
   }
 
   _renderTypes(s) {
     const sheet = this._sheetEl;
+    sheet.append(el("h3", {}, "Add a tile"), el("p", { class: "hint" }, `Screen ${s.screen}, position ${s.tile}.`));
+    this._loadSuggestions(s);
+    const suggest = this._suggest?.data;
+    if (!suggest) {
+      sheet.append(el("p", { class: "hint" }, "Looking up favourites…"));
+    } else {
+      if (suggest.favourites.length) {
+        sheet.append(el("div", { class: "field-label" }, "Favourites"),
+          el("div", { class: "types" }, suggest.favourites.map((f) => this._suggestionCard(s, f, "favourite"))));
+      }
+      if (suggest.frequent.length) {
+        sheet.append(el("div", { class: "field-label" }, "Frequently used"),
+          el("div", { class: "types" }, suggest.frequent.map((f) => this._suggestionCard(s, f, "frequent"))));
+      }
+      if (!suggest.favourites.length) {
+        sheet.append(el("p", { class: "hint" }, "Tip: tap a tile and choose Add to favourites to have it here, on every panel."));
+      }
+    }
     sheet.append(
-      el("h3", {}, "Add a tile"),
-      el("p", { class: "hint" }, `Screen ${s.screen}, position ${s.tile}. Choose what kind of tile:`),
+      el("div", { class: "field-label" }, "Or choose a kind of tile"),
       el(
         "div",
         { class: "types" },
@@ -1939,6 +2184,7 @@ class OxrsPanelEditor extends HTMLElement {
         ...(target.index !== undefined
           ? { index: target.index }
           : { tile_type: target.tileType, screen: target.screen, position: target.position }),
+        ...(target.template ? { template: target.template } : {}),
       });
       this._form = { target, spec, data: initialData(spec.schema), size: spec.size, error: null, busy: false, ready };
     } catch (err) {
@@ -1972,6 +2218,11 @@ class OxrsPanelEditor extends HTMLElement {
     const spec = form.spec;
     sheet.append(el("h3", {}, `${editing ? "Edit" : "Add"} · ${spec.type_label}`));
     sheet.append(el("p", { class: "hint" }, `Screen ${spec.screen}, position ${spec.position}`));
+    if (form.target.from === "frequent") {
+      sheet.append(el("p", { class: "hint" }, "Set up like your other tiles of this kind. Choose what it controls, and give it a label."));
+    } else if (form.target.from === "favourite") {
+      sheet.append(el("p", { class: "hint" }, "From your favourites. Change anything before adding it."));
+    }
 
     if (!form.ready) {
       sheet.append(
@@ -2137,6 +2388,21 @@ select { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid 
 .info { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; color: var(--secondary-text-color); font-size: 14px; margin-bottom: 8px; }
 .info .name { color: var(--primary-text-color); font-size: 16px; font-weight: 500; }
 .offline { color: var(--error-color); }
+.found { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.found-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--primary-color); background: rgba(3, 169, 244, 0.08); font-size: 14px; }
+.fav.on { color: var(--warning-color, #ffa600); border-color: var(--warning-color, #ffa600); }
+.suggestion-row { display: flex; gap: 6px; align-items: stretch; min-width: 0; }
+.suggestion-row .suggestion { flex: 1; min-width: 0; }
+.types { grid-template-columns: minmax(0, 1fr); }
+.type.suggestion { min-width: 0; overflow: hidden; }
+.suggestion-text { flex: 1; }
+.suggestion[disabled] { opacity: 0.45; cursor: default; }
+.suggestion-text { display: flex; flex-direction: column; min-width: 0; }
+.suggestion-text > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.suggestion-detail { font-size: 12px; color: var(--secondary-text-color); }
+.swatch { width: 14px; height: 14px; border-radius: 4px; margin-left: auto; flex: 0 0 auto; box-shadow: 0 0 0 1px var(--divider-color); }
+.fav-remove { border: 1px solid var(--divider-color); border-radius: 8px; background: transparent; color: var(--secondary-text-color); cursor: pointer; padding: 0 10px; }
+.fav-remove:hover { color: var(--error-color); border-color: var(--error-color); }
 .info-actions { margin-left: auto; display: flex; gap: 6px; }
 .settings-button { font: inherit; font-size: 14px; padding: 4px 10px; border-radius: 8px; border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); cursor: pointer; }
 .settings-button:hover { border-color: var(--primary-color); }
