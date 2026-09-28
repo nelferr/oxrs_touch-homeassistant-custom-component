@@ -637,11 +637,18 @@ class OxrsPanel:
         # Step 2: seed tile states (includes backgroundImage.name references)
         await self.async_seed_state()
 
-    def build_conf(self, tiles: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    def build_conf(
+        self,
+        tiles: list[dict[str, Any]] | None = None,
+        *,
+        screen_names: dict[str, str] | None = None,
+        screen_colors: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """The conf/ payload for this panel: display settings and every screen's tiles.
 
         Also what the visual editor draws, so the editor shows exactly what the
-        panel is sent. tiles replaces the stored tiles, for previewing unsaved edits.
+        panel is sent. tiles, screen_names and screen_colors replace the stored ones,
+        for previewing unsaved edits.
         """
         screens: dict[int, list[dict[str, Any]]] = {}
         for tile in self.tiles if tiles is None else tiles:
@@ -731,7 +738,8 @@ class OxrsPanel:
 
                 tiles_conf.append(tile_conf)
             
-            screen_names = self.entry.options.get(CONF_SCREEN_NAMES, {})
+            if screen_names is None:
+                screen_names = self.entry.options.get(CONF_SCREEN_NAMES, {})
             screen_conf: dict[str, Any] = {
                 "screen": screen_idx,
                 "label": screen_names.get(str(screen_idx), self.entry.title),
@@ -739,7 +747,8 @@ class OxrsPanel:
                 "tiles": tiles_conf,
             }
             # A screen's own colour; without one it inherits the panel's.
-            screen_colors = self.entry.options.get(CONF_SCREEN_COLORS)
+            if screen_colors is None:
+                screen_colors = self.entry.options.get(CONF_SCREEN_COLORS)
             screen_color = override_payload(
                 screen_colors.get(str(screen_idx))
                 if isinstance(screen_colors, dict)

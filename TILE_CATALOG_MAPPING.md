@@ -940,6 +940,24 @@ view, which was removed.
 - **Live.** The page re-reads when an entity a tile uses changes (at most once a second),
   keeping an open form as it is. The last slide is a new, empty screen; adding a tile
   there creates it. Screens are still named and coloured in the dialog.
-- **Not yet:** moving a tile by dragging, renaming/recolouring screens on the page, and
-  the rarer settings (panel settings, images, icons), which stay in the dialog.
+- **Moving tiles (v2.1.0).** Drag with the mouse (starts after 6 px), or press and hold a
+  tile for 400 ms then drag (touch: a finger that moves more than 10 px first is a swipe,
+  so swiping across tiles still changes screens; once held, touchmove is cancelled so the
+  page does not scroll). The tile moves by the cell it was grabbed at. A drop marker shows
+  green where it fits. Or tap Move in the tile's sheet, then tap an outlined target.
+  Rules (`_dropAt`): an empty place where the tile fits at its size moves it; a tile of
+  the same size there swaps the two (anchor for anchor); anything else is refused with a
+  reason. Within one screen only. Each move is a staged change with Undo; the server
+  checks the result again on apply (`draft_problems`).
+- **Screens on the page (v2.1.0).** Tap a screen's name: name and background colour, in
+  an ha-form. As in the dialog, a blank name is not stored (the screen shows the panel's
+  title) and pure black is not stored (the screen follows the panel's colour) -
+  `drafts.clean_screens`. The draft carries `screen_names` / `screen_colors`; the preview
+  draws them (`hub.build_conf(..., screen_names=, screen_colors=)`) and apply saves them
+  with the tiles in one write. The staleness fingerprint (`drafts.layout_fingerprint`)
+  covers tiles, names and colours, so a rename in the dialog meanwhile refuses the apply.
+  Invalid names/colours are refused (`screens_problems`), except values unchanged from
+  what is stored.
+- **Not yet:** moving a tile to another screen, and the rarer settings (panel settings,
+  images, icons), which stay in the dialog.
 
