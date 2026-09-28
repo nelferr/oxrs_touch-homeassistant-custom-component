@@ -15,13 +15,16 @@ the dialog's own input handling, so a tile made here is the tile the dialog woul
 make. Edits are staged in the page and saved with one "Apply to panel", which the
 server checks again (drafts.py) and refuses if the tiles changed in the dialog since
 the page loaded them. The panel settings (timeouts, brightness, colours, temperature
-correction) work the same way: the dialog's own form, staged, previewed, applied.
+correction, album art) work the same way: the dialog's own forms, staged, previewed,
+applied. The background images and custom icons are a library shared by every panel,
+so adding or deleting one there takes effect at once, as it does in the dialog.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +38,7 @@ from homeassistant.helpers import selector
 
 from .boards import screen_size
 from .const import (
+    ALBUM_ART_SETTINGS_KEYS,
     CONF_ACTION_ENTITY,
     CONF_ALBUM_ART,
     CONF_ENTITY_ID,
@@ -49,6 +53,7 @@ from .const import (
     CONF_TILE,
     CONF_TILES,
     CONF_TYPE,
+    DISPLAY_SETTINGS_KEYS,
     DOMAIN,
     FIELD_LARGER,
     LIBRARY_DATA_KEY,
@@ -75,6 +80,7 @@ from .grid import (
     size_value,
     tile_span,
 )
+from .library import ICON_CATEGORIES, ICON_STATE_PAIRS, MAX_ENCODED_SIZE, MAX_ENCODED_SIZE_HARD
 from .tiles import TILE_TYPES
 
 _LOGGER = logging.getLogger(__name__)
@@ -90,6 +96,9 @@ WS_BUILD_TILE = f"{DOMAIN}/editor/build_tile"
 WS_APPLY = f"{DOMAIN}/editor/apply"
 WS_SETTINGS_FORM = f"{DOMAIN}/editor/settings_form"
 WS_BUILD_SETTINGS = f"{DOMAIN}/editor/build_settings"
+WS_LIBRARY = f"{DOMAIN}/editor/library"
+WS_LIBRARY_ADD = f"{DOMAIN}/editor/library_add"
+WS_LIBRARY_DELETE = f"{DOMAIN}/editor/library_delete"
 
 # The background image field, as the dialog's background step names it.
 BACKGROUND_FIELD = "background_image_name"
@@ -121,6 +130,9 @@ async def async_setup_editor(hass: HomeAssistant, version: str) -> None:
             ws_apply,
             ws_settings_form,
             ws_build_settings,
+            ws_library,
+            ws_library_add,
+            ws_library_delete,
         ):
             websocket_api.async_register_command(hass, handler)
         hass.data[_REGISTERED] = True
@@ -419,12 +431,22 @@ async def _labels(hass: HomeAssistant) -> dict[str, Any]:
                 },
                 "descriptions": details.get("data_description", {}),
             }
-        settings = steps.get("panel_settings", {})
-        out["settings"] = {
-            "labels": settings.get("data", {}),
-            "descriptions": settings.get("data_description", {}),
-            "description": settings.get("description", ""),
-        }
+        from .config_flow import ALBUM_ART_PLACEHOLDERS
+
+        placeholders = {"display": {}, "album_art": ALBUM_ART_PLACEHOLDERS}
+        out["settings"] = {}
+        for name, step_id in _SETTINGS_STEPS.items():
+            step = steps.get(step_id, {})
+            description = step.get("description", "")
+            for key, value in placeholders[name].items():
+                description = description.replace("{" + key + "}", value)
+            out["settings"][name] = {
+                "title": step.get("title", ""),
+                "labels": step.get("data", {}),
+                "descriptions": step.get("data_description", {}),
+                "description": description,
+            }
+        out["errors"] = json.loads(text)["options"].get("error", {})
         hass.data[_LABELS] = out
     return hass.data[_LABELS]
 
@@ -689,10 +711,11 @@ def ws_apply(hass: HomeAssistant, connection: websocket_api.ActiveConnection, ms
     cols, rows = panel.layout["horizontal"], panel.layout["vertical"]
     problems = draft_problems(panel.tiles, msg["tiles"], cols, rows) + screens_problems(names, colours, stored_names, stored_colours)
     settings = msg.get("settings")
-    if settings is not None and settings != stored_panel_settings:
-        # Changed settings go through the dialog's form again; unchanged ones stay as
-        # stored, so a hand-edited value cannot block every save.
-        settings, problem = _checked_settings(panel, settings)
+    if settings is not None:
+        # Changed settings go through the dialog's forms again; a form whose values
+        # are unchanged keeps them as stored, so a hand-edited value cannot block
+        # every save.
+        settings, problem = _checked_settings(panel, settings, stored_panel_settings)
         if problem:
             problems.append(f"Panel settings: {problem}.")
     else:
@@ -712,6 +735,23 @@ def ws_apply(hass: HomeAssistant, connection: websocket_api.ActiveConnection, ms
 
 # ── panel settings ────────────────────────────────────────────────────────
 
+# The dialog's two settings steps, as the page's settings sheet shows them.
+_SETTINGS_STEPS = {"display": "panel_settings", "album_art": "album_art_settings"}
+_SETTINGS_KEYS_OF = {"display": DISPLAY_SETTINGS_KEYS, "album_art": ALBUM_ART_SETTINGS_KEYS}
+
+
+def _settings_code(name: str) -> tuple[Any, Any]:
+    """The dialog's (schema builder, saver) for a settings form."""
+    from .config_flow import OxrsOptionsFlow
+
+    if name == "display":
+        return OxrsOptionsFlow._panel_settings_schema, OxrsOptionsFlow._panel_settings_options
+    return OxrsOptionsFlow._album_art_schema, OxrsOptionsFlow._album_art_options
+
+
+def _part(settings: dict[str, Any], name: str) -> dict[str, Any]:
+    return {k: settings[k] for k in _SETTINGS_KEYS_OF[name] if k in settings}
+
 
 def _settings_options(panel: Any, settings: Any) -> dict[str, Any]:
     """The panel's options with a draft's settings in place of the stored ones."""
@@ -722,37 +762,54 @@ def _settings_options(panel: Any, settings: Any) -> dict[str, Any]:
     return options
 
 
-def _settings_from_input(data: dict[str, Any]) -> dict[str, Any]:
-    """Validated form answers as the dialog stores them (the SETTINGS_KEYS part)."""
-    from .config_flow import OxrsOptionsFlow
+def _form_settings(name: str, data: dict[str, Any]) -> dict[str, Any]:
+    """A form's validated answers as the dialog stores them (that form's keys)."""
+    _schema, save = _settings_code(name)
+    return _part(save({}, data), name)
 
-    return stored_settings(OxrsOptionsFlow._panel_settings_options({}, data))
 
-
-def _checked_settings(panel: Any, settings: Any) -> tuple[dict[str, Any], str | None]:
-    """Stored-shape settings sent by the page, run through the dialog's form again.
-
-    Returns the settings as the dialog would store them, and the reason when the
-    form refuses them.
-    """
-    from .config_flow import OxrsOptionsFlow
-
-    if not isinstance(settings, dict):
-        return {}, "not a mapping"
+def _answers(name: str, settings: dict[str, Any]) -> dict[str, Any]:
+    """Stored-shape settings as the answers the form takes (the display form keeps
+    its firmware settings nested in the options)."""
+    if name == "album_art":
+        return _part(settings, name)
     values = settings.get(CONF_PANEL_SETTINGS, {})
     if not isinstance(values, dict):
-        return {}, "the display settings are not a mapping"
+        raise vol.Invalid("the display settings are not a mapping")
     answers = {k: values[k] for k in PANEL_SETTINGS if k in values}
-    for key in SETTINGS_KEYS:
-        if key != CONF_PANEL_SETTINGS and key in settings:
-            answers[key] = settings[key]
-    # Anything left out takes the value the form starts with for this draft.
-    try:
-        schema = OxrsOptionsFlow._panel_settings_schema(_settings_options(panel, settings))
-        data = schema(answers)
-    except vol.Invalid as err:
-        return {}, "; ".join(f"{field}: {message}" for field, message in _errors(err).items())
-    return _settings_from_input(data), None
+    answers.update({k: v for k, v in _part(settings, name).items() if k != CONF_PANEL_SETTINGS})
+    return answers
+
+
+def _checked_settings(
+    panel: Any, settings: Any, stored: dict[str, Any]
+) -> tuple[dict[str, Any], str | None]:
+    """Stored-shape settings sent by the page, run through the dialog's forms again.
+
+    Returns the settings as the dialog would store them, and the reasons when a form
+    refuses its part. A form whose part is unchanged from what is stored keeps it.
+    """
+    if not isinstance(settings, dict):
+        return {}, "not a mapping"
+    result: dict[str, Any] = {}
+    problems: list[str] = []
+    for name in _SETTINGS_STEPS:
+        part = _part(settings, name)
+        if part == _part(stored, name):
+            result.update(part)
+            continue
+        schema, _save = _settings_code(name)
+        try:
+            # Anything left out takes the value the form starts with for this draft.
+            answers = _answers(name, settings)
+            data = schema(_settings_options(panel, settings))(answers)
+        except vol.Invalid as err:
+            problems.append(
+                "; ".join(f"{field}: {message}" for field, message in _errors(err).items())
+            )
+            continue
+        result.update(_form_settings(name, data))
+    return result, "; ".join(problems) or None
 
 
 _SETTINGS_DRAFT = {
@@ -766,38 +823,211 @@ _SETTINGS_DRAFT = {
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_settings_form(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
-    """The dialog's panel settings form, filled in from the draft's settings."""
+    """The dialog's settings forms (display, album art), filled in from the draft."""
     panel = _panel(hass, msg["entry_id"])
     if panel is None:
         connection.send_error(msg["id"], "not_found", "That panel is not set up and running.")
         return
-    from .config_flow import OxrsOptionsFlow
-
-    schema = OxrsOptionsFlow._panel_settings_schema(_settings_options(panel, msg.get("settings")))
+    options = _settings_options(panel, msg.get("settings"))
     labels = await _labels(hass)
-    connection.send_result(msg["id"], {"schema": serialize_schema(schema), **labels["settings"]})
+    forms = []
+    for name in _SETTINGS_STEPS:
+        schema, _save = _settings_code(name)
+        forms.append({"form": name, "schema": serialize_schema(schema(options)), **labels["settings"][name]})
+    connection.send_result(msg["id"], {"forms": forms})
 
 
 @websocket_api.websocket_command(
-    {vol.Required("type"): WS_BUILD_SETTINGS, **_SETTINGS_DRAFT, vol.Required("input"): dict}
+    {
+        vol.Required("type"): WS_BUILD_SETTINGS,
+        **_SETTINGS_DRAFT,
+        # The answers of the forms that changed, by form: {"display": {...}, ...}.
+        vol.Required("inputs"): {vol.In(list(_SETTINGS_STEPS)): dict},
+    }
 )
 @websocket_api.require_admin
 @callback
 def ws_build_settings(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
-    """Turn a submitted settings form into the settings the dialog would have saved.
+    """Turn submitted settings forms into the settings the dialog would have saved.
 
-    Replies {"settings": ...} in the stored shape, or {"errors": {field: message}}.
+    Replies {"settings": ...}, the draft's settings with those forms' parts replaced,
+    in the stored shape; or {"errors": {form: {field: message}}}.
     """
     panel = _panel(hass, msg["entry_id"])
     if panel is None:
         connection.send_error(msg["id"], "not_found", "That panel is not set up and running.")
         return
-    from .config_flow import OxrsOptionsFlow
-
-    schema = OxrsOptionsFlow._panel_settings_schema(_settings_options(panel, msg.get("settings")))
-    try:
-        data = schema(msg["input"])
-    except vol.Invalid as err:
-        connection.send_result(msg["id"], {"errors": _errors(err)})
+    draft = msg.get("settings")
+    settings = dict(draft) if isinstance(draft, dict) else stored_settings(panel.entry.options)
+    options = _settings_options(panel, draft)
+    errors: dict[str, dict[str, str]] = {}
+    for name, answers in msg["inputs"].items():
+        if name not in _SETTINGS_STEPS:
+            errors[name] = {"base": "unknown settings form"}
+            continue
+        schema, _save = _settings_code(name)
+        try:
+            data = schema(options)(answers)
+        except vol.Invalid as err:
+            errors[name] = _errors(err)
+            continue
+        settings = {k: v for k, v in settings.items() if k not in _SETTINGS_KEYS_OF[name]}
+        settings.update(_form_settings(name, data))
+    if errors:
+        connection.send_result(msg["id"], {"errors": errors})
         return
-    connection.send_result(msg["id"], {"settings": _settings_from_input(data)})
+    connection.send_result(msg["id"], {"settings": settings})
+
+
+# ── the shared library: background images and custom icons ───────────────
+
+
+def _library(hass: HomeAssistant) -> Any:
+    return hass.data.get(LIBRARY_DATA_KEY)
+
+
+def _library_use(hass: HomeAssistant) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    """Which tiles, on every panel, use each image and icon (by name), as sentences.
+
+    An icon that is half of a pair (door closed / open) is used by a tile showing
+    either half, since the panel swaps them as the state changes.
+    """
+    pairs = {icon: pair for pair in ICON_STATE_PAIRS for icon in pair}
+    images: dict[str, list[str]] = defaultdict(list)
+    icons: dict[str, list[str]] = defaultdict(list)
+    for panel in (hass.data.get(DOMAIN) or {}).values():
+        for tile in panel.tiles:
+            where = (
+                f"{panel.entry.title}, screen {tile.get(CONF_SCREEN)} "
+                f"position {tile.get(CONF_TILE)}"
+            )
+            image = tile.get(BACKGROUND_FIELD)
+            if isinstance(image, str) and image:
+                images[image].append(where)
+            icon = tile.get(CONF_ICON)
+            if isinstance(icon, str) and icon:
+                for name in pairs.get(icon, (icon,)):
+                    icons[name].append(where)
+    return images, icons
+
+
+def library_view(hass: HomeAssistant) -> dict[str, Any]:
+    """Every library image and icon, with its picture and where it is used."""
+    library = _library(hass)
+    used_images, used_icons = _library_use(hass)
+    images = sorted(
+        (
+            {
+                "id": item["id"],
+                "name": item["name"],
+                "format": item.get("format", "png"),
+                "size": item.get("size", 0),
+                "encoded": len(item.get("data", "")),
+                "uri": _data_uri(item) if item.get("data") else None,
+                "used_by": used_images.get(item["name"], []),
+            }
+            for item in library.images.values()
+        ),
+        key=lambda i: i["name"].lower(),
+    )
+    icons = sorted(
+        (
+            {
+                "id": item["id"],
+                "name": item["name"],
+                "category": item.get("category", "misc"),
+                "category_label": ICON_CATEGORIES.get(item.get("category", ""), "Other"),
+                "bundled": bool(item.get("bundled")),
+                "uri": _data_uri(item) if item.get("data") else None,
+                "used_by": used_icons.get(item["name"], []),
+            }
+            for item in library.icons.values()
+        ),
+        key=lambda i: (i["category_label"], i["name"].lower()),
+    )
+    return {
+        "images": images,
+        "icons": icons,
+        "categories": [{"value": k, "label": v} for k, v in ICON_CATEGORIES.items()],
+        "safe_size": MAX_ENCODED_SIZE,
+        "max_size": MAX_ENCODED_SIZE_HARD,
+    }
+
+
+@websocket_api.websocket_command({vol.Required("type"): WS_LIBRARY})
+@websocket_api.require_admin
+@callback
+def ws_library(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """The shared library of background images and custom icons."""
+    if _library(hass) is None:
+        connection.send_error(msg["id"], "not_ready", "The image and icon library has not loaded.")
+        return
+    connection.send_result(msg["id"], library_view(hass))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): WS_LIBRARY_ADD,
+        vol.Required("kind"): vol.In(["image", "icon"]),
+        vol.Required("name"): str,
+        # base64, or a data: URI as a file picker reads it - the dialog accepts both.
+        vol.Required("data"): str,
+        vol.Optional("category"): str,
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_library_add(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """Add an image or icon to the library, as the dialog's add steps do.
+
+    Replies {"ok": True, "replaced": bool} or {"error": message}. An image whose
+    name is taken is refused (the panel knows images by name, so a second one of the
+    same name would never be shown); an icon replaces the one of its name, as in the
+    dialog.
+    """
+    from .config_flow import async_add_library_icon, async_add_library_image
+
+    library = _library(hass)
+    if library is None:
+        connection.send_error(msg["id"], "not_ready", "The image and icon library has not loaded.")
+        return
+    labels = await _labels(hass)
+    name = msg["name"].strip()
+    if msg["kind"] == "image":
+        replaced = False
+        if name and library.get_image_by_name(name) is not None:
+            connection.send_result(
+                msg["id"],
+                {"error": "An image of that name is already in the library. Choose another name, or delete that one first."},
+            )
+            return
+        error = await async_add_library_image(library, name, msg["data"])
+    else:
+        replaced = bool(name) and library.get_icon_by_name(name) is not None
+        error = await async_add_library_icon(library, name, msg["data"], msg.get("category") or "misc")
+    if error:
+        connection.send_result(msg["id"], {"error": labels["errors"].get(error, error)})
+        return
+    connection.send_result(msg["id"], {"ok": True, "replaced": replaced})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): WS_LIBRARY_DELETE,
+        vol.Required("kind"): vol.In(["image", "icon"]),
+        vol.Required("item_id"): str,
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_library_delete(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """Delete an image or icon from the library, as the dialog's delete steps do."""
+    library = _library(hass)
+    if library is None:
+        connection.send_error(msg["id"], "not_ready", "The image and icon library has not loaded.")
+        return
+    delete = library.delete_image if msg["kind"] == "image" else library.delete_icon
+    if not await delete(msg["item_id"]):
+        connection.send_error(msg["id"], "not_found", "That is no longer in the library.")
+        return
+    connection.send_result(msg["id"], {"ok": True})

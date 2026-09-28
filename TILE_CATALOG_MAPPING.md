@@ -981,5 +981,25 @@ view, which was removed.
   `layout_fingerprint` now covers the settings too. Apply re-runs changed settings
   through the form (`_checked_settings`) and keeps unchanged ones as stored. Tested
   against HA 2026.9.3's NumberSelector (range) and ColorRGBSelector (three bytes).
-- **Not yet:** album art settings, images and icons, which stay in the dialog.
+- **Album art settings on the page (v2.4.0).** The settings sheet stacks the dialog's two
+  settings forms, "Panel display settings" and "Album art", with one Save; only forms
+  whose answers changed are sent (`editor/build_settings` takes `inputs: {form: answers}`
+  and answers `{"settings"}` or `{"errors": {form: {field: msg}}}`). The album art step is
+  split like the display step (`_album_art_schema` / `_album_art_options`;
+  `ALBUM_ART_PLACEHOLDERS` fills its description). `const.SETTINGS_KEYS` is now
+  `DISPLAY_SETTINGS_KEYS + ALBUM_ART_SETTINGS_KEYS`, so the draft, the fingerprint and
+  apply cover both; apply checks each form's part on its own (`_checked_settings`), keeping
+  an unchanged part as stored.
+- **The library on the page (v2.4.0).** "Library" lists the shared background images
+  and custom icons (`editor/library`: pictures as data URIs, bundled icons marked, and
+  `used_by` - every tile on every panel using it, an icon pair's two halves counting
+  together). Add (`editor/library_add`: kind, name, data - base64 or the data: URI a
+  file picker reads - and category) goes through `config_flow.async_add_library_image` /
+  `async_add_library_icon`, split out of the dialog's add steps, with the dialog's error
+  messages; an image whose name is taken is refused (the panel knows images by name), an
+  icon replaces the one of its name as in the dialog. Delete (`editor/library_delete`,
+  kind + `item_id` - not `id`, which is the websocket message's own) asks first and says
+  which tiles lose the picture. Library changes are immediate, not staged: the library is
+  shared, not part of one panel's options. The page then re-reads the library and panels.
+- **Not yet:** nothing from the dialog is left out; the dialog stays for those who prefer it.
 

@@ -149,13 +149,21 @@ MIN_TEMPERATURE_OFFSET = -20.0
 MAX_TEMPERATURE_OFFSET = 20.0
 
 # The options the panel settings form saves (the dialog's step and the OXRS panels
-# page): a draft on the page carries exactly these, as they are stored.
-SETTINGS_KEYS = (
+# page), and those the album art form saves: a draft on the page carries exactly
+# these, as they are stored.
+DISPLAY_SETTINGS_KEYS = (
     CONF_PANEL_SETTINGS,
     CONF_TEMPERATURE_OFFSET,
     CONF_BACKGROUND_COLOR,
     CONF_ICON_ON_COLOR,
 )
+ALBUM_ART_SETTINGS_KEYS = (
+    CONF_ALBUM_ART_BUDGET,
+    CONF_ALBUM_ART_ZOOM,
+    CONF_ALBUM_ART_MAX_SOURCE,
+    CONF_ALBUM_ART_TEXT,
+)
+SETTINGS_KEYS = DISPLAY_SETTINGS_KEYS + ALBUM_ART_SETTINGS_KEYS
 
 # A tile is 140px. If artwork cannot be squeezed into the budget even at two
 # colours, the encoder retries smaller rather than giving up outright.

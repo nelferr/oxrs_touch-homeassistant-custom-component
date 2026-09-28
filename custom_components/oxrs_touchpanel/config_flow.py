@@ -109,6 +109,13 @@ from .tiles import (
 )
 
 
+# The album art step's description names the default budget and the tile size.
+ALBUM_ART_PLACEHOLDERS = {
+    "default": str(DEFAULT_ALBUM_ART_BUDGET),
+    "size": str(ALBUM_ART_SIZE),
+}
+
+
 def _client_id_from_topic(topic: str) -> str | None:
     """Extract the client id from a ``stat/<client-id>/adopt`` topic."""
     parts = topic.split("/")
@@ -175,6 +182,52 @@ def _decode_and_validate_base64_image(
         return None, "", "icon_must_be_png"
 
     return image_bytes, fmt, None
+
+
+async def async_add_library_image(
+    library: SharedMediaLibrary, name: str, image_base64: str
+) -> str | None:
+    """Add a pasted background image to the shared library.
+
+    Returns None when it was added, or the error key the form shows. Used by the
+    dialog's step and the OXRS panels page, so both accept exactly the same input.
+    """
+    name = (name or "").strip()
+    image_base64 = (image_base64 or "").strip()
+    if not name:
+        return "no_name"
+    if not image_base64:
+        return "no_file"
+    if name.startswith("_"):
+        return "invalid_image_name"
+    image_bytes, fmt, error_key = _decode_and_validate_base64_image(image_base64)
+    if error_key:
+        return error_key
+    image_id = hashlib.md5(image_base64.encode()).hexdigest()[:12]
+    if not await library.add_image(image_id, name, image_bytes, fmt):
+        return "image_error"
+    return None
+
+
+async def async_add_library_icon(
+    library: SharedMediaLibrary, name: str, icon_base64: str, category: str
+) -> str | None:
+    """Add a pasted PNG custom icon to the shared library; as async_add_library_image."""
+    name = (name or "").strip()
+    icon_base64 = (icon_base64 or "").strip()
+    if not name:
+        return "no_name"
+    if not icon_base64:
+        return "no_file"
+    if name.startswith("_"):
+        return "invalid_image_name"
+    icon_bytes, _fmt, error_key = _decode_and_validate_base64_image(icon_base64, require_png=True)
+    if error_key:
+        return error_key
+    icon_id = hashlib.md5(icon_base64.encode()).hexdigest()[:12]
+    if not await library.add_icon(icon_id, name, icon_bytes, category):
+        return "image_error"
+    return None
 
 
 class OxrsConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -454,7 +507,9 @@ class OxrsOptionsFlow(OptionsFlow):
     @staticmethod
     def _panel_settings_schema(options: Mapping[str, Any]) -> vol.Schema:
         """The panel settings form, pre-filled from options (stored, or a page's draft)."""
-        stored = options.get(CONF_PANEL_SETTINGS) or {}
+        stored = options.get(CONF_PANEL_SETTINGS)
+        if not isinstance(stored, dict):
+            stored = {}  # a hand-edited value: start from the defaults
         fields: dict[Any, Any] = {
             vol.Required(
                 key, default=stored.get(key, default)
@@ -513,15 +568,33 @@ class OxrsOptionsFlow(OptionsFlow):
         on real hardware.
         """
         if user_input is not None:
-            options = dict(self._entry.options)
-            options[CONF_ALBUM_ART_BUDGET] = int(user_input[CONF_ALBUM_ART_BUDGET])
-            options[CONF_ALBUM_ART_ZOOM] = int(user_input[CONF_ALBUM_ART_ZOOM])
-            options[CONF_ALBUM_ART_MAX_SOURCE] = int(user_input[CONF_ALBUM_ART_MAX_SOURCE])
-            options[CONF_ALBUM_ART_TEXT] = bool(user_input.get(CONF_ALBUM_ART_TEXT))
-            return self.async_create_entry(title="", data=options)
+            return self.async_create_entry(
+                title="", data=self._album_art_options(self._entry.options, user_input)
+            )
+        return self.async_show_form(
+            step_id="album_art_settings",
+            data_schema=self._album_art_schema(self._entry.options),
+            description_placeholders=ALBUM_ART_PLACEHOLDERS,
+        )
 
-        current = self._entry.options
-        schema = vol.Schema(
+    @staticmethod
+    def _album_art_options(
+        options: Mapping[str, Any], user_input: dict[str, Any]
+    ) -> dict[str, Any]:
+        """The options with the album art form's answers saved into them (shared
+        with the OXRS panels page, as _panel_settings_options is)."""
+        options = dict(options)
+        options[CONF_ALBUM_ART_BUDGET] = int(user_input[CONF_ALBUM_ART_BUDGET])
+        options[CONF_ALBUM_ART_ZOOM] = int(user_input[CONF_ALBUM_ART_ZOOM])
+        options[CONF_ALBUM_ART_MAX_SOURCE] = int(user_input[CONF_ALBUM_ART_MAX_SOURCE])
+        options[CONF_ALBUM_ART_TEXT] = bool(user_input.get(CONF_ALBUM_ART_TEXT))
+        return options
+
+    @staticmethod
+    def _album_art_schema(options: Mapping[str, Any]) -> vol.Schema:
+        """The album art form, pre-filled from options (stored, or a page's draft)."""
+        current = options
+        return vol.Schema(
             {
                 vol.Required(
                     CONF_ALBUM_ART_BUDGET,
@@ -564,14 +637,6 @@ class OxrsOptionsFlow(OptionsFlow):
                     default=current.get(CONF_ALBUM_ART_TEXT, DEFAULT_ALBUM_ART_TEXT),
                 ): selector.BooleanSelector(),
             }
-        )
-        return self.async_show_form(
-            step_id="album_art_settings",
-            data_schema=schema,
-            description_placeholders={
-                "default": str(DEFAULT_ALBUM_ART_BUDGET),
-                "size": str(ALBUM_ART_SIZE),
-            },
         )
 
     async def async_step_add_tile(
@@ -1601,50 +1666,21 @@ class OxrsOptionsFlow(OptionsFlow):
         the OXRS Asset Generator. Available to every configured panel."""
         try:
             if user_input is not None:
-                image_name = user_input.get("image_name", "").strip()
-                image_base64 = user_input.get("image_base64", "").strip()
-
-                if not image_name:
-                    return self.async_show_form(
-                        step_id="add_background_image",
-                        data_schema=self._build_add_media_schema(),
-                        errors={"base": "no_name"},
-                    )
-                if not image_base64:
-                    return self.async_show_form(
-                        step_id="add_background_image",
-                        data_schema=self._build_add_media_schema(),
-                        errors={"base": "no_file"},
-                    )
-                if image_name.startswith("_"):
-                    return self.async_show_form(
-                        step_id="add_background_image",
-                        data_schema=self._build_add_media_schema(),
-                        errors={"base": "invalid_image_name"},
-                    )
-
-                image_bytes, fmt, error_key = _decode_and_validate_base64_image(image_base64)
+                library = self._get_library()
+                if library is None:
+                    _LOGGER.error("Shared media library not available")
+                    return self.async_abort(reason="invalid_format")
+                error_key = await async_add_library_image(
+                    library,
+                    user_input.get("image_name", ""),
+                    user_input.get("image_base64", ""),
+                )
                 if error_key:
                     return self.async_show_form(
                         step_id="add_background_image",
                         data_schema=self._build_add_media_schema(),
                         errors={"base": error_key},
                     )
-
-                library = self._get_library()
-                if library is None:
-                    _LOGGER.error("Shared media library not available")
-                    return self.async_abort(reason="invalid_format")
-
-                image_id = hashlib.md5(image_base64.encode()).hexdigest()[:12]
-                success = await library.add_image(image_id, image_name, image_bytes, fmt)
-                if not success:
-                    return self.async_show_form(
-                        step_id="add_background_image",
-                        data_schema=self._build_add_media_schema(),
-                        errors={"base": "image_error"},
-                    )
-
                 return self.async_abort(reason="image_uploaded")
 
             return self.async_show_form(
@@ -1704,31 +1740,15 @@ class OxrsOptionsFlow(OptionsFlow):
         icon picker."""
         try:
             if user_input is not None:
-                icon_name = user_input.get("icon_name", "").strip()
-                icon_base64 = user_input.get("icon_base64", "").strip()
-                category = user_input.get("category", "misc")
-
-                if not icon_name:
-                    return self.async_show_form(
-                        step_id="add_custom_icon",
-                        data_schema=self._build_add_icon_schema(),
-                        errors={"base": "no_name"},
-                    )
-                if not icon_base64:
-                    return self.async_show_form(
-                        step_id="add_custom_icon",
-                        data_schema=self._build_add_icon_schema(),
-                        errors={"base": "no_file"},
-                    )
-                if icon_name.startswith("_"):
-                    return self.async_show_form(
-                        step_id="add_custom_icon",
-                        data_schema=self._build_add_icon_schema(),
-                        errors={"base": "invalid_image_name"},
-                    )
-
-                icon_bytes, _fmt, error_key = _decode_and_validate_base64_image(
-                    icon_base64, require_png=True
+                library = self._get_library()
+                if library is None:
+                    _LOGGER.error("Shared media library not available")
+                    return self.async_abort(reason="invalid_format")
+                error_key = await async_add_library_icon(
+                    library,
+                    user_input.get("icon_name", ""),
+                    user_input.get("icon_base64", ""),
+                    user_input.get("category", "misc"),
                 )
                 if error_key:
                     return self.async_show_form(
@@ -1736,21 +1756,6 @@ class OxrsOptionsFlow(OptionsFlow):
                         data_schema=self._build_add_icon_schema(),
                         errors={"base": error_key},
                     )
-
-                library = self._get_library()
-                if library is None:
-                    _LOGGER.error("Shared media library not available")
-                    return self.async_abort(reason="invalid_format")
-
-                icon_id = hashlib.md5(icon_base64.encode()).hexdigest()[:12]
-                success = await library.add_icon(icon_id, icon_name, icon_bytes, category)
-                if not success:
-                    return self.async_show_form(
-                        step_id="add_custom_icon",
-                        data_schema=self._build_add_icon_schema(),
-                        errors={"base": "image_error"},
-                    )
-
                 return self.async_abort(reason="icon_uploaded")
 
             return self.async_show_form(

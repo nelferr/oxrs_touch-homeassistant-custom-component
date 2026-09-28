@@ -55,12 +55,15 @@ on/off state, labels and album art - and lets you change them:
   left without tiles is taken off the panel.
 - Tap a screen's name to rename it or give it its own background colour.
 - Tap **Panel settings** for the panel's timeouts, tile brightness, sensor interval,
-  temperature correction, background colour and icon colour. The preview shows the
-  colours and brightness before you apply them.
+  temperature correction, background colour, icon colour and album art sizing. The
+  preview shows the colours and brightness before you apply them.
+- Tap **Library** to see the background images and custom icons every panel shares,
+  and which tiles use each. Add one by choosing a file (or pasting the OXRS Asset
+  Generator's base64), or delete one.
 
 Changes are staged until you press **Apply to panel**, which sends them to the panel in
-one go (or **Discard** to drop them). Album art settings, background images and custom
-icons are still set in the panel's **Configure** dialog.
+one go (or **Discard** to drop them). The library is the exception: it is shared by
+every panel, so adding or deleting there happens straight away, as in the dialog.
 
 ## Support
 

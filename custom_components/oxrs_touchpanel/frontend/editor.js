@@ -7,8 +7,9 @@
 // options dialog's own code and rendered with Home Assistant's own <ha-form>.
 //
 // Edits are staged: they change a draft (tiles, screen names and colours, the panel
-// settings) that is drawn as a preview, and nothing reaches the panel until "Apply to panel", which
-// sends the whole draft once. Tiles move by dragging (mouse), press-and-hold then
+// and album art settings) that is drawn as a preview, and nothing reaches the panel until "Apply to panel", which
+// sends the whole draft once. The image and icon library is shared by every panel, so
+// adding or deleting there takes effect at once, as in the dialog. Tiles move by dragging (mouse), press-and-hold then
 // drag (touch - a plain swipe still changes screens), or the Move button - to another
 // screen too: while dragging, hover over the arrows (or past the screen's side) to
 // change screens; with the Move button, change screens before tapping the target.
@@ -30,6 +31,9 @@ const WS = {
   apply: "oxrs_touchpanel/editor/apply",
   settingsForm: "oxrs_touchpanel/editor/settings_form",
   buildSettings: "oxrs_touchpanel/editor/build_settings",
+  library: "oxrs_touchpanel/editor/library",
+  libraryAdd: "oxrs_touchpanel/editor/library_add",
+  libraryDelete: "oxrs_touchpanel/editor/library_delete",
 };
 const BUILTIN_ICONS = new Set([
   "_3dprint", "_blind", "_bulb", "_ceilingfan", "_coffee", "_door", "_feed", "_locked",
@@ -58,7 +62,7 @@ const DRAG_START_PX = 6;
 // the page changes screen with the tile still held.
 const EDGE_HOVER_MS = 600;
 // Sheet modes that hold a form being filled in; the data refreshing must not wipe them.
-const FORM_MODES = new Set(["form", "playlists", "screen", "settings"]);
+const FORM_MODES = new Set(["form", "playlists", "screen", "settings", "library"]);
 
 // A colour the firmware treats as set: pure black means "unset, inherit".
 function colour(rgb) {
@@ -371,6 +375,7 @@ class OxrsPanelEditor extends HTMLElement {
     this._form = null;
     this._screenForm = null;
     this._settingsForm = null;
+    this._libraryState = null;
     this._say(null);
     this._renderAll();
     // The stored tiles may have moved on meanwhile; show them as they are now.
@@ -451,6 +456,7 @@ class OxrsPanelEditor extends HTMLElement {
     this._form = null;
     this._screenForm = null;
     this._settingsForm = null;
+    this._libraryState = null;
     this._renderAll();
   }
 
@@ -495,7 +501,12 @@ class OxrsPanelEditor extends HTMLElement {
       el("span", { class: "name" }, view.title),
       el("span", {}, `${view.hardware || "board not reported"} · ${grid.cols} × ${grid.rows} tiles`),
       view.available ? null : el("span", { class: "offline" }, "offline"),
-      el("button", { class: "settings-button", onclick: () => this._openSettings() }, "Panel settings")
+      el(
+        "span",
+        { class: "info-actions" },
+        el("button", { class: "settings-button", onclick: () => this._openSettings() }, "Panel settings"),
+        el("button", { class: "settings-button", onclick: () => this._openLibrary() }, "Library")
+      )
     ));
 
     const track = el("div", { class: "track" });
@@ -1055,9 +1066,12 @@ class OxrsPanelEditor extends HTMLElement {
     else if (pending) this._renderAll();
   }
 
-  // A tile, screen or settings form is being filled in.
+  // A tile, screen, settings or library form is being filled in.
   get _formOpen() {
-    return FORM_MODES.has(this._sheetMode) && !!(this._form || this._screenForm || this._settingsForm);
+    return (
+      FORM_MODES.has(this._sheetMode) &&
+      !!(this._form || this._screenForm || this._settingsForm || this._libraryState?.adding)
+    );
   }
 
   // ── screens ───────────────────────────────────────────────────────────
@@ -1161,7 +1175,8 @@ class OxrsPanelEditor extends HTMLElement {
   }
 
   // ── panel settings ────────────────────────────────────────────────────
-  // The dialog's own "Panel display settings" form, filled in from the draft.
+  // The dialog's own settings forms (display, album art), filled in from the draft,
+  // one under the other with one Save.
   async _openSettings() {
     if (this._formOpen) {
       this._say("Finish or cancel the open form first.", true);
@@ -1170,21 +1185,25 @@ class OxrsPanelEditor extends HTMLElement {
     if (!this._stored) return;
     this._moving = null;
     this._selected = null;
+    this._libraryState = null;
     this._markSelected();
     this._sheetMode = "settings";
-    const form = { spec: null, data: {}, start: null, error: null, fieldErrors: {}, ready: null };
+    const form = { forms: null, error: null, ready: null };
     this._settingsForm = form;
     this._renderSheet();
     if (this._narrow) this._sheetEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
     const ready = await ensureHaForm();
     try {
-      const spec = await this._hass.callWS({
+      const result = await this._hass.callWS({
         type: WS.settingsForm,
         entry_id: this._stored.entry_id,
         settings: this._draft?.settings ?? null,
       });
-      Object.assign(form, { spec, data: initialData(spec.schema), ready });
-      form.start = stable(form.data);
+      form.forms = result.forms.map((spec) => {
+        const data = initialData(spec.schema);
+        return { spec, data, start: stable(data), fieldErrors: {} };
+      });
+      form.ready = ready;
     } catch (err) {
       Object.assign(form, { error: err?.message || String(err), ready });
     }
@@ -1200,7 +1219,7 @@ class OxrsPanelEditor extends HTMLElement {
       sheet.append(el("p", { class: "hint" }, "Loading the form…"));
       return;
     }
-    if (!form.spec) {
+    if (!form.forms) {
       sheet.append(el("p", { class: "hint error" }, form.error || "Couldn't load the form."), back());
       return;
     }
@@ -1211,20 +1230,23 @@ class OxrsPanelEditor extends HTMLElement {
       );
       return;
     }
-    const spec = form.spec;
-    if (spec.description) sheet.append(el("p", { class: "hint" }, spec.description));
-    const haForm = document.createElement("ha-form");
-    haForm.computeLabel = (field) => spec.labels?.[field.name] || field.name;
-    haForm.computeHelper = (field) => spec.descriptions?.[field.name];
-    haForm.hass = this._hass;
-    haForm.schema = spec.schema;
-    haForm.data = form.data;
-    haForm.error = form.fieldErrors || {};
-    haForm.addEventListener("value-changed", (e) => {
-      form.data = e.detail.value;
-    });
-    this._haForm = haForm;
-    sheet.append(haForm);
+    for (const part of form.forms) {
+      const spec = part.spec;
+      sheet.append(el("h4", { class: "section" }, spec.title));
+      if (spec.description) sheet.append(el("p", { class: "hint" }, spec.description));
+      const haForm = document.createElement("ha-form");
+      haForm.dataset.form = spec.form;
+      haForm.computeLabel = (field) => spec.labels?.[field.name] || field.name;
+      haForm.computeHelper = (field) => spec.descriptions?.[field.name];
+      haForm.hass = this._hass;
+      haForm.schema = spec.schema;
+      haForm.data = part.data;
+      haForm.error = part.fieldErrors || {};
+      haForm.addEventListener("value-changed", (e) => {
+        part.data = e.detail.value;
+      });
+      sheet.append(haForm);
+    }
     if (form.error) sheet.append(el("p", { class: "hint error" }, form.error));
     sheet.append(el(
       "div",
@@ -1243,15 +1265,20 @@ class OxrsPanelEditor extends HTMLElement {
 
   async _saveSettings() {
     const form = this._settingsForm;
-    if (!form?.spec || !this._stored) return;
-    if (stable(form.data) === form.start) return this._closeSettings(); // nothing changed
+    if (!form?.forms || !this._stored) return;
+    // Only the forms that were changed are sent; the others stay as they are.
+    const inputs = {};
+    for (const part of form.forms) {
+      if (stable(part.data) !== part.start) inputs[part.spec.form] = part.data;
+    }
+    if (!Object.keys(inputs).length) return this._closeSettings(); // nothing changed
     let result;
     try {
       result = await this._hass.callWS({
         type: WS.buildSettings,
         entry_id: this._stored.entry_id,
         settings: this._draft?.settings ?? null,
-        input: form.data,
+        inputs,
       });
     } catch (err) {
       form.error = err?.message || String(err);
@@ -1259,13 +1286,308 @@ class OxrsPanelEditor extends HTMLElement {
     }
     if (this._settingsForm !== form) return; // closed meanwhile
     if (result.errors) {
-      form.error = result.errors.base || "Check the values marked below.";
-      form.fieldErrors = Object.fromEntries(Object.entries(result.errors).filter(([k]) => k !== "base"));
+      form.error = "Check the values marked in red.";
+      for (const part of form.forms) part.fieldErrors = result.errors[part.spec.form] || {};
       return this._renderSheet();
     }
     this._settingsForm = null;
     await this._commit({ settings: result.settings }, null);
     this._say("Changed the panel settings. Not on the panel until you apply.");
+  }
+
+  // ── the image and icon library ────────────────────────────────────────
+  // Shared by every panel: adding and deleting take effect at once, not on Apply.
+  async _openLibrary() {
+    if (this._formOpen) {
+      this._say("Finish or cancel the open form first.", true);
+      return;
+    }
+    this._moving = null;
+    this._selected = null;
+    this._markSelected();
+    this._settingsForm = null;
+    this._sheetMode = "library";
+    this._libraryState = { data: null, error: null, picked: null, confirm: false, adding: null, busy: false };
+    this._renderSheet();
+    if (this._narrow) this._sheetEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    await this._loadLibrary();
+  }
+
+  async _loadLibrary() {
+    const state = this._libraryState;
+    if (!state) return;
+    try {
+      state.data = await this._hass.callWS({ type: WS.library });
+      state.error = null;
+    } catch (err) {
+      state.error = err?.message || String(err);
+    }
+    if (this._libraryState === state) this._renderSheet();
+  }
+
+  _closeLibrary() {
+    this._libraryState = null;
+    this._sheetMode = null;
+    this._renderSheet();
+  }
+
+  _renderLibrary() {
+    const sheet = this._sheetEl;
+    const state = this._libraryState;
+    sheet.append(
+      el("h3", {}, "Images and icons"),
+      el("p", { class: "hint" }, "The library every panel shares. Adding or deleting here happens straight away - it is not part of Apply to panel.")
+    );
+    if (state.error) {
+      sheet.append(el("p", { class: "hint error" }, state.error));
+    }
+    if (!state.data) {
+      if (!state.error) sheet.append(el("p", { class: "hint" }, "Loading the library…"));
+      sheet.append(el("div", { class: "actions" }, el("button", { onclick: () => this._closeLibrary() }, "Close")));
+      return;
+    }
+    if (state.adding) return this._renderLibraryAdd();
+    const data = state.data;
+    const card = (kind, item) => {
+      const picked = state.picked && state.picked.kind === kind && state.picked.id === item.id;
+      const picture = !item.uri
+        ? null
+        : kind === "image"
+          ? el("img", { class: "lib-image", src: item.uri, alt: "" })
+          : el("span", { class: "lib-icon", style: { maskImage: `url("${item.uri}")`, webkitMaskImage: `url("${item.uri}")` } });
+      return el(
+        "button",
+        {
+          class: `lib-card${picked ? " on" : ""}`,
+          title: item.name,
+          onclick: () => {
+            state.picked = picked ? null : { kind, id: item.id };
+            state.confirm = false;
+            this._renderSheet();
+          },
+        },
+        el("span", { class: "lib-picture" }, picture),
+        el("span", { class: "lib-name" }, item.name),
+        item.used_by.length ? el("span", { class: "lib-used" }, `${item.used_by.length} tile${item.used_by.length === 1 ? "" : "s"}`) : null
+      );
+    };
+    const details = (kind, list) => {
+      const item = state.picked?.kind === kind && list.find((i) => i.id === state.picked.id);
+      return item ? this._libraryDetails(kind, item) : null;
+    };
+
+    sheet.append(el(
+      "div",
+      { class: "lib-head" },
+      el("h4", { class: "section" }, `Background images (${data.images.length})`),
+      el("button", { class: "settings-button", onclick: () => this._startLibraryAdd("image") }, "Add image")
+    ));
+    if (!data.images.length) sheet.append(el("p", { class: "hint" }, "No background images yet."));
+    else sheet.append(el("div", { class: "lib-grid" }, data.images.map((i) => card("image", i))));
+    add(sheet, details("image", data.images));
+
+    sheet.append(el(
+      "div",
+      { class: "lib-head" },
+      el("h4", { class: "section" }, `Custom icons (${data.icons.length})`),
+      el("button", { class: "settings-button", onclick: () => this._startLibraryAdd("icon") }, "Add icon")
+    ));
+    if (!data.icons.length) sheet.append(el("p", { class: "hint" }, "No custom icons yet."));
+    let category = null;
+    let grid = null;
+    for (const icon of data.icons) {
+      if (icon.category_label !== category) {
+        category = icon.category_label;
+        grid = el("div", { class: "lib-grid" });
+        sheet.append(el("div", { class: "field-label" }, category), grid);
+      }
+      grid.append(card("icon", icon));
+    }
+    add(sheet, details("icon", data.icons));
+    sheet.append(el("div", { class: "actions" }, el("button", { onclick: () => this._closeLibrary() }, "Close")));
+  }
+
+  _libraryDetails(kind, item) {
+    const state = this._libraryState;
+    const what = kind === "image" ? "image" : "icon";
+    const rows = [["Name", item.name]];
+    const size = item.size < 1024 ? `${item.size} bytes` : `${(item.size / 1024).toFixed(1)} KB`;
+    if (kind === "image") rows.push(["Format", `${item.format.toUpperCase()}, ${size}`]);
+    else rows.push(["Category", item.category_label + (item.bundled ? " (comes with the integration)" : "")]);
+    const used = item.used_by.length
+      ? el("ul", { class: "lib-uses" }, item.used_by.slice(0, 6).map((u) => el("li", {}, u)),
+          item.used_by.length > 6 ? el("li", {}, `and ${item.used_by.length - 6} more`) : null)
+      : el("p", { class: "hint" }, "No tile uses it.");
+    const box = el(
+      "div",
+      { class: "lib-details" },
+      el("dl", {}, rows.map(([k, v]) => [el("dt", {}, k), el("dd", {}, v)])),
+      el("div", { class: "field-label" }, "Used by"),
+      used
+    );
+    if (!state.confirm) {
+      box.append(el("div", { class: "actions" }, el("button", { class: "danger", onclick: () => { state.confirm = true; this._renderSheet(); } }, `Delete ${what}`)));
+      return box;
+    }
+    const warning = [
+      `Delete ${item.name} from the library? It goes from every panel, and can't be undone here.`,
+      item.used_by.length
+        ? ` ${item.used_by.length} tile${item.used_by.length === 1 ? "" : "s"} use${item.used_by.length === 1 ? "s" : ""} it and will lose ${kind === "image" ? "the background image" : "the icon"} the next time ${item.used_by.length === 1 ? "its" : "their"} panel restarts or is sent its settings.`
+        : "",
+      item.bundled ? " It comes with the integration, and stays deleted after restarts." : "",
+    ].join("");
+    box.append(
+      el("p", { class: "hint error" }, warning),
+      el(
+        "div",
+        { class: "actions" },
+        el("button", { class: "danger", disabled: state.busy, onclick: () => this._libraryDelete(kind, item) }, "Delete"),
+        el("button", { onclick: () => { state.confirm = false; this._renderSheet(); } }, "Cancel")
+      )
+    );
+    return box;
+  }
+
+  async _libraryDelete(kind, item) {
+    const state = this._libraryState;
+    state.busy = true;
+    this._renderSheet();
+    try {
+      await this._hass.callWS({ type: WS.libraryDelete, kind, item_id: item.id });
+      this._say(`Deleted ${item.name} from the library.`);
+      state.picked = null;
+      state.confirm = false;
+    } catch (err) {
+      this._say(err?.message || String(err), true);
+    }
+    state.busy = false;
+    await this._libraryChanged();
+  }
+
+  // The library changed: re-read it, and redraw the panels, whose pictures come from it.
+  async _libraryChanged() {
+    await this._loadLibrary();
+    await this._fetch();
+  }
+
+  _startLibraryAdd(kind) {
+    const state = this._libraryState;
+    state.adding = { kind, name: "", category: "misc", data: "", fileName: "", error: null };
+    state.picked = null;
+    state.confirm = false;
+    this._renderSheet();
+  }
+
+  _renderLibraryAdd() {
+    const sheet = this._sheetEl;
+    const state = this._libraryState;
+    const adding = state.adding;
+    const icon = adding.kind === "icon";
+    sheet.append(el("h4", { class: "section" }, icon ? "Add a custom icon" : "Add a background image"));
+    sheet.append(el(
+      "p",
+      { class: "hint" },
+      icon
+        ? "A PNG, 60 × 60 like the built-in icons: it is drawn in white, or in the icon-on colour when the tile is on. It becomes available on every panel."
+        : "A PNG, JPG or GIF sized for the tile it goes on (a 1 × 1 tile is about 140 px). It becomes available on every panel."
+    ));
+    const nameInput = el("input", { class: "text", type: "text", value: adding.name, placeholder: "Name", "aria-label": "Name" });
+    nameInput.addEventListener("input", () => { adding.name = nameInput.value; });
+    sheet.append(el("div", { class: "field-label" }, "Name"), nameInput);
+    if (icon) {
+      const select = el(
+        "select",
+        { "aria-label": "Category" },
+        state.data.categories.map((c) => el("option", { value: c.value, selected: c.value === adding.category }, c.label))
+      );
+      select.addEventListener("change", () => { adding.category = select.value; });
+      sheet.append(el("div", { class: "field-label" }, "Category"), select);
+    }
+    const file = el("input", { type: "file", accept: icon ? "image/png" : "image/png,image/jpeg,image/gif", "aria-label": "Picture file" });
+    file.addEventListener("change", () => {
+      const chosen = file.files?.[0];
+      if (!chosen) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        adding.data = String(reader.result || "");
+        adding.fileName = chosen.name;
+        if (!adding.name) adding.name = chosen.name.replace(/\.[^.]+$/, "");
+        adding.error = null;
+        this._renderSheet();
+      };
+      reader.readAsDataURL(chosen);
+    });
+    sheet.append(el("div", { class: "field-label" }, "Picture"), file);
+    const paste = el("textarea", { class: "text", rows: 3, placeholder: "…or paste the imageBase64 value from the OXRS Asset Generator", "aria-label": "Base64" });
+    paste.value = adding.fileName ? "" : adding.data;
+    paste.addEventListener("input", () => { adding.data = paste.value.trim(); adding.fileName = ""; this._renderLibraryPreview(); });
+    sheet.append(paste);
+    sheet.append(el("div", { class: "lib-preview" }));
+    if (adding.error) sheet.append(el("p", { class: "hint error" }, adding.error));
+    sheet.append(el(
+      "div",
+      { class: "actions" },
+      el("button", { class: "primary", disabled: state.busy, onclick: () => this._libraryAdd() }, "Add to library"),
+      el("button", { onclick: () => { state.adding = null; this._renderSheet(); } }, "Cancel")
+    ));
+    this._renderLibraryPreview();
+  }
+
+  // What was chosen, drawn as it will look, with its encoded size against the limits.
+  _renderLibraryPreview() {
+    const state = this._libraryState;
+    const adding = state?.adding;
+    const box = this._sheetEl.querySelector(".lib-preview");
+    if (!adding || !box) return;
+    box.replaceChildren();
+    const raw = adding.data.replace(/^data:[^,]*,/, "");
+    if (!raw) return;
+    const uri = adding.data.startsWith("data:") ? adding.data : `data:image/png;base64,${raw}`;
+    const picture =
+      adding.kind === "image"
+        ? el("img", { class: "lib-image", src: uri, alt: "" })
+        : el("span", { class: "lib-icon", style: { maskImage: `url("${uri}")`, webkitMaskImage: `url("${uri}")` } });
+    const size = raw.length;
+    const note =
+      size > state.data.max_size
+        ? el("span", { class: "error" }, `${(size / 1024).toFixed(1)} KB encoded - too large (the limit is ${state.data.max_size / 1024} KB).`)
+        : size > state.data.safe_size
+          ? el("span", { class: "warn" }, `${(size / 1024).toFixed(1)} KB encoded - over the ${state.data.safe_size / 1024} KB the OXRS docs call safe: the panel may not draw it, or may restart.`)
+          : el("span", {}, `${(size / 1024).toFixed(1)} KB encoded${adding.fileName ? ` · ${adding.fileName}` : ""}`);
+    box.append(el("span", { class: "lib-picture" }, picture), note);
+  }
+
+  async _libraryAdd() {
+    const state = this._libraryState;
+    const adding = state?.adding;
+    if (!adding || state.busy) return;
+    state.busy = true;
+    let result;
+    try {
+      result = await this._hass.callWS({
+        type: WS.libraryAdd,
+        kind: adding.kind,
+        name: adding.name,
+        data: adding.data,
+        ...(adding.kind === "icon" ? { category: adding.category } : {}),
+      });
+    } catch (err) {
+      result = { error: err?.message || String(err) };
+    }
+    state.busy = false;
+    if (this._libraryState !== state) return;
+    if (result.error) {
+      adding.error = result.error;
+      return this._renderSheet();
+    }
+    const name = adding.name.trim();
+    state.adding = null;
+    this._say(
+      result.replaced
+        ? `Replaced the icon ${name} in the library.`
+        : `Added ${name} to the library. Choose it for a tile when you add or edit one.`
+    );
+    await this._libraryChanged();
   }
 
   // ── picking and the side sheet ────────────────────────────────────────
@@ -1316,6 +1638,7 @@ class OxrsPanelEditor extends HTMLElement {
       return;
     }
     if (this._sheetMode === "settings" && this._settingsForm) return this._renderSettingsForm();
+    if (this._sheetMode === "library" && this._libraryState) return this._renderLibrary();
     if (!view || !s) {
       sheet.append(el("p", { class: "hint" }, "Tap a tile to change, move or remove it, or an empty space to add a tile there. Drag a tile to move it (on a phone: press and hold it first); hold it over an arrow to take it to another screen. Tap a screen's name to rename or recolour it. Swipe, or use the arrows, to change screens; the last screen is a new one."));
       return;
@@ -1601,7 +1924,8 @@ select { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid 
 .info { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; color: var(--secondary-text-color); font-size: 14px; margin-bottom: 8px; }
 .info .name { color: var(--primary-text-color); font-size: 16px; font-weight: 500; }
 .offline { color: var(--error-color); }
-.settings-button { margin-left: auto; font: inherit; font-size: 14px; padding: 4px 10px; border-radius: 8px; border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); cursor: pointer; }
+.info-actions { margin-left: auto; display: flex; gap: 6px; }
+.settings-button { font: inherit; font-size: 14px; padding: 4px 10px; border-radius: 8px; border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); cursor: pointer; }
 .settings-button:hover { border-color: var(--primary-color); }
 .track { display: flex; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; }
 .track::-webkit-scrollbar { display: none; }
@@ -1676,6 +2000,26 @@ button[disabled] { opacity: 0.5; cursor: default; }
 .msg { font-size: 14px; }
 .msg.pending { font-weight: 500; }
 .spacer { flex: 1; }
+.section { margin: 16px 0 6px; font-size: 15px; font-weight: 500; }
+.lib-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.lib-head .section { margin-bottom: 6px; }
+.lib-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); gap: 6px; margin-bottom: 8px; }
+.lib-card { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px 4px; border-radius: 8px; border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); cursor: pointer; min-width: 0; }
+.lib-card.on { border-color: var(--primary-color); box-shadow: 0 0 0 1px var(--primary-color); }
+.lib-picture { width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; background: #1b1b1b; border-radius: 6px; overflow: hidden; flex: 0 0 auto; }
+.lib-image { max-width: 48px; max-height: 48px; image-rendering: pixelated; }
+.lib-icon { width: 40px; height: 40px; background: #fff; mask-size: contain; -webkit-mask-size: contain; mask-repeat: no-repeat; -webkit-mask-repeat: no-repeat; mask-position: center; -webkit-mask-position: center; }
+.lib-name { font-size: 12px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib-used { font-size: 11px; color: var(--secondary-text-color); }
+.lib-details { border: 1px solid var(--divider-color); border-radius: 8px; padding: 8px 10px; margin: 4px 0 8px; }
+.lib-details dl { margin: 4px 0; }
+.lib-uses { margin: 0 0 4px; padding-left: 18px; font-size: 13px; }
+.lib-preview { display: flex; align-items: center; gap: 10px; margin: 8px 0; font-size: 13px; color: var(--secondary-text-color); }
+.lib-preview .warn { color: var(--warning-color, #ffa600); }
+.lib-preview .error { color: var(--error-color); }
+input.text, textarea.text { width: 100%; box-sizing: border-box; font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--divider-color); background: var(--card-background-color); color: var(--primary-text-color); }
+textarea.text { margin-top: 8px; font-family: monospace; font-size: 12px; resize: vertical; }
+input[type=file] { font: inherit; font-size: 13px; color: var(--primary-text-color); max-width: 100%; }
 `;
 
 customElements.define("oxrs-panel-editor", OxrsPanelEditor);
