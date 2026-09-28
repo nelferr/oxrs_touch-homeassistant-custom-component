@@ -947,8 +947,18 @@ view, which was removed.
   green where it fits. Or tap Move in the tile's sheet, then tap an outlined target.
   Rules (`_dropAt`): an empty place where the tile fits at its size moves it; a tile of
   the same size there swaps the two (anchor for anchor); anything else is refused with a
-  reason. Within one screen only. Each move is a staged change with Undo; the server
-  checks the result again on apply (`draft_problems`).
+  reason. Each move is a staged change with Undo; the server checks the result again on
+  apply (`draft_problems`).
+- **Moving tiles between screens (v2.2.0).** `_dropAt(view, index, screen, anchor)` takes
+  any screen, including the new one at the end. Dragging: hovering over an arrow, or past
+  the frame's side, for 600 ms (`EDGE_HOVER_MS`) changes screen with the tile still held,
+  and again while it stays there; redraws wait until the drop (`_renderPending`). Move
+  button: move mode survives changing screens. A swap across screens trades screen and
+  anchor. After a move the page follows the tile, and says so when the old screen is left
+  empty (no tiles = no screen on the panel). Server side, a tile equal to a stored one
+  except for `screen`/`tile` is "moved only": its placement and size-fit are checked but
+  not its type, so an old action tile can move too (each stored tile accounts for one
+  such move; a copy of one that stayed put is checked in full).
 - **Screens on the page (v2.1.0).** Tap a screen's name: name and background colour, in
   an ha-form. As in the dialog, a blank name is not stored (the screen shows the panel's
   title) and pure black is not stored (the screen follows the panel's colour) -
@@ -958,6 +968,6 @@ view, which was removed.
   covers tiles, names and colours, so a rename in the dialog meanwhile refuses the apply.
   Invalid names/colours are refused (`screens_problems`), except values unchanged from
   what is stored.
-- **Not yet:** moving a tile to another screen, and the rarer settings (panel settings,
-  images, icons), which stay in the dialog.
+- **Not yet:** the rarer settings (panel settings, images, icons), which stay in the
+  dialog.
 
