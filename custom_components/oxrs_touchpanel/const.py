@@ -15,6 +15,7 @@ PLATFORMS: list[Platform] = [
     Platform.BINARY_SENSOR,
     Platform.BUTTON,
     Platform.SENSOR,
+    Platform.UPDATE,
 ]
 
 # Config entry data / options keys
@@ -270,3 +271,8 @@ def signal_available(client_id: str) -> str:
 def signal_tele(client_id: str) -> str:
     """Dispatcher signal fired when a panel publishes new telemetry."""
     return f"{DOMAIN}_{client_id}_tele"
+
+
+def signal_firmware(client_id: str) -> str:
+    """Dispatcher signal fired when a panel's firmware, or an update of it, changes."""
+    return f"{DOMAIN}_{client_id}_firmware"

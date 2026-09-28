@@ -1001,5 +1001,24 @@ view, which was removed.
   kind + `item_id` - not `id`, which is the websocket message's own) asks first and says
   which tiles lose the picture. Library changes are immediate, not staged: the library is
   shared, not part of one panel's options. The page then re-reads the library and panels.
+- **Restart and firmware updates (v2.5.0).** The Device sheet (`editor/device`) shows the
+  board, connection and firmware the panel announces in its retained adopt message
+  (`firmware.version`, `network.ip`, `network.mode`, kept by `hub._note_adopt`; the
+  version also goes onto the device page as sw_version). Restart (`editor/restart`) is
+  the Reboot button's MQTT `{"restart": true}`. Firmware (`firmware.py`): releases from
+  the GitHub API for OXRS-IO/OXRS-IO-TouchPanel-ESP32-FW, cached 6 h; the build is
+  `firmware.BUILDS[(hardware, mode)]` (platformio.ini envs; e.g. WT32S3-86S + wifi =
+  wt32-86s-wifi_ESP32-S3), the asset `OXRS-IO-TouchPanel-FW_<build>_v<version>_OTA.bin`.
+  The image is checked before sending (0xE9 magic, header chip id 0 = ESP32 / 9 =
+  ESP32-S3 must match the build, 64 kB-8 MB), then POSTed whole (Content-Length is
+  needed: the firmware's `_postApiOta` sizes `Update.begin` from it) to
+  `http://<ip>/api/ota` (OXRS-IO-API-ESP32-LIB; no auth by the firmware's design). 204
+  means written and restarting; the job completes when the panel announces the new
+  version (`hub.expect_firmware`), or fails after 5 minutes saying to check the panel.
+  `editor/firmware_install` checks online / build / address / release first and runs the
+  job in the background; the page polls `editor/device` every 2 s while it runs. The
+  `update` platform (`update.py`, device class firmware) offers the latest stable
+  release in HA's own update UI through the same code; the page can also pick a
+  pre-release or an older version.
 - **Not yet:** nothing from the dialog is left out; the dialog stays for those who prefer it.
 

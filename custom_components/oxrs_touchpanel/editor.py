@@ -18,16 +18,19 @@ the page loaded them. The panel settings (timeouts, brightness, colours, tempera
 correction, album art) work the same way: the dialog's own forms, staged, previewed,
 applied. The background images and custom icons are a library shared by every panel,
 so adding or deleting one there takes effect at once, as it does in the dialog.
+The Device sheet restarts the panel and updates its firmware (firmware.py).
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+import aiohttp
 import voluptuous as vol
 
 from homeassistant.components import frontend, panel_custom, websocket_api
@@ -36,6 +39,7 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import selector
 
+from . import firmware
 from .boards import screen_size
 from .const import (
     ALBUM_ART_SETTINGS_KEYS,
@@ -99,6 +103,9 @@ WS_BUILD_SETTINGS = f"{DOMAIN}/editor/build_settings"
 WS_LIBRARY = f"{DOMAIN}/editor/library"
 WS_LIBRARY_ADD = f"{DOMAIN}/editor/library_add"
 WS_LIBRARY_DELETE = f"{DOMAIN}/editor/library_delete"
+WS_DEVICE = f"{DOMAIN}/editor/device"
+WS_RESTART = f"{DOMAIN}/editor/restart"
+WS_FIRMWARE_INSTALL = f"{DOMAIN}/editor/firmware_install"
 
 # The background image field, as the dialog's background step names it.
 BACKGROUND_FIELD = "background_image_name"
@@ -133,6 +140,9 @@ async def async_setup_editor(hass: HomeAssistant, version: str) -> None:
             ws_library,
             ws_library_add,
             ws_library_delete,
+            ws_device,
+            ws_restart,
+            ws_firmware_install,
         ):
             websocket_api.async_register_command(hass, handler)
         hass.data[_REGISTERED] = True
@@ -1031,3 +1041,136 @@ async def ws_library_delete(hass: HomeAssistant, connection: websocket_api.Activ
         connection.send_error(msg["id"], "not_found", "That is no longer in the library.")
         return
     connection.send_result(msg["id"], {"ok": True})
+
+
+# ── the device: restart and firmware ─────────────────────────────────────
+
+
+def _version_key(version: str) -> tuple[Any, ...]:
+    """Sort key for a version like 3.3.1 (numbers compared as numbers)."""
+    return tuple((0, int(p)) if p.isdigit() else (1, p) for p in version.replace("-", ".").split("."))
+
+
+async def device_view(
+    hass: HomeAssistant, entry_id: str, panel: Any, refresh: bool = False
+) -> dict[str, Any]:
+    """What the Device sheet shows: the panel as it reports itself, and its firmware."""
+    build = firmware.build_for(panel.reported_hardware, panel.network_mode)
+    view: dict[str, Any] = {
+        "entry_id": entry_id,
+        "title": panel.entry.title,
+        "client_id": panel.client_id,
+        "available": bool(panel.available),
+        "hardware": panel.reported_hardware,
+        "firmware_version": panel.firmware_version,
+        "ip": panel.ip_address,
+        "mode": panel.network_mode,
+        "build": build[0] if build else None,
+        "releases_url": firmware.RELEASES_URL,
+        "releases": [],
+        "latest": None,
+        "releases_error": None,
+        "job": panel.firmware_job.as_dict() if panel.firmware_job else None,
+    }
+    if build is None:
+        return view
+    try:
+        releases = await firmware.async_releases(hass, force=refresh)
+    except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+        view["releases_error"] = f"Couldn't reach GitHub to list the firmware releases ({err})."
+        return view
+    installed = panel.firmware_version
+    latest = firmware.latest_stable(releases, build[0])
+    view["latest"] = latest.version if latest else None
+    for release in firmware.releases_for(releases, build[0]):
+        newer = None
+        if installed:
+            try:
+                newer = _version_key(release.version) > _version_key(installed)
+            except TypeError:
+                newer = None
+        view["releases"].append(
+            {
+                "version": release.version,
+                "prerelease": release.prerelease,
+                "published": release.published,
+                "url": release.url,
+                "installed": release.version == installed,
+                "newer": newer,
+            }
+        )
+    return view
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): WS_DEVICE, vol.Required("entry_id"): str, vol.Optional("refresh"): bool}
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_device(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """The panel as it reports itself, and the firmware releases built for it."""
+    panel = _panel(hass, msg["entry_id"])
+    if panel is None:
+        connection.send_error(msg["id"], "not_found", "That panel is not set up and running.")
+        return
+    connection.send_result(msg["id"], await device_view(hass, msg["entry_id"], panel, bool(msg.get("refresh"))))
+
+
+@websocket_api.websocket_command({vol.Required("type"): WS_RESTART, vol.Required("entry_id"): str})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_restart(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """Restart the panel with the firmware's own restart command, as the Reboot button does."""
+    panel = _panel(hass, msg["entry_id"])
+    if panel is None:
+        connection.send_error(msg["id"], "not_found", "That panel is not set up and running.")
+        return
+    if not panel.available:
+        connection.send_error(msg["id"], "offline", "The panel is offline, so it can't be told to restart.")
+        return
+    await panel.async_restart()
+    connection.send_result(msg["id"], {"ok": True})
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): WS_FIRMWARE_INSTALL, vol.Required("entry_id"): str, vol.Required("version"): str}
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_firmware_install(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """Start updating the panel's firmware to a release; the page follows it with editor/device.
+
+    Checked here first, so the page hears at once why it can't start; the update runs
+    in the background, since it takes a minute or more.
+    """
+    panel = _panel(hass, msg["entry_id"])
+    if panel is None:
+        connection.send_error(msg["id"], "not_found", "That panel is not set up and running.")
+        return
+    if panel.firmware_job is not None and panel.firmware_job.active:
+        connection.send_error(msg["id"], "busy", "An update is already running on this panel.")
+        return
+    if not panel.available:
+        connection.send_error(msg["id"], "offline", "The panel is offline. It must be online to take an update.")
+        return
+    build = firmware.build_for(panel.reported_hardware, panel.network_mode)
+    if build is None or not panel.ip_address:
+        connection.send_error(
+            msg["id"],
+            "unknown_build",
+            "This panel has not said which board and connection it has, or its address, so the right firmware can't be chosen.",
+        )
+        return
+    view = await device_view(hass, msg["entry_id"], panel)
+    if msg["version"] not in {r["version"] for r in view["releases"]}:
+        connection.send_error(msg["id"], "no_release", f"There is no firmware {msg['version']} for this panel ({build[0]}).")
+        return
+
+    async def run() -> None:
+        try:
+            await panel.async_install_firmware(msg["version"])
+        except Exception:  # noqa: BLE001 - reported on the job; never let it escape a task
+            _LOGGER.exception("Firmware update of %s failed", panel.client_id)
+
+    hass.async_create_task(run(), f"{DOMAIN} firmware update {panel.client_id}")
+    connection.send_result(msg["id"], {"started": True})
