@@ -273,8 +273,8 @@ class OxrsPanel:
         self.network_mode: str | None = None
         # A firmware update in progress or just finished (firmware.FirmwareJob).
         self.firmware_job: firmware.FirmwareJob | None = None
-        # Updates waiting for the panel to come back on a version: (version, event).
-        self._firmware_waiters: list[tuple[str, asyncio.Event]] = []
+        # Updates waiting for the panel to come back and announce itself.
+        self._announce_waiters: list[asyncio.Event] = []
 
     @property
     def tiles(self) -> list[dict[str, Any]]:
@@ -539,14 +539,15 @@ class OxrsPanel:
         """The board the panel says it is now, else the one it was added as."""
         return self._reported_hardware or self.hardware
 
-    def expect_firmware(self, version: str) -> asyncio.Event:
-        """An event set when the panel next announces itself running this version."""
+    def expect_announce(self) -> asyncio.Event:
+        """An event set when the panel next announces itself (its adopt message,
+        which it publishes each time it starts)."""
         event = asyncio.Event()
-        self._firmware_waiters.append((version, event))
+        self._announce_waiters.append(event)
         return event
 
-    async def async_install_firmware(self, version: str) -> firmware.FirmwareJob:
-        """Update the panel's firmware to a release (see firmware.async_install).
+    async def async_install_firmware(self, image: bytes, filename: str) -> firmware.FirmwareJob:
+        """Update the panel's firmware from a file (see firmware.async_install).
 
         Raises RuntimeError if an update is already running on this panel.
         """
@@ -554,7 +555,7 @@ class OxrsPanel:
             raise RuntimeError("An update is already running on this panel.")
         signal = signal_firmware(self.client_id)
         return await firmware.async_install(
-            self.hass, self, version, lambda: async_dispatcher_send(self.hass, signal)
+            self.hass, self, image, filename, lambda: async_dispatcher_send(self.hass, signal)
         )
 
     @property
@@ -1304,14 +1305,13 @@ class OxrsPanel:
                         self._update_device_version(version)
                     except Exception as err:  # noqa: BLE001 - cosmetic only
                         _LOGGER.debug("Could not show firmware %s on the device page: %s", version, err)
-                # A panel that just took an update announces itself again on restart.
-                waiting = [(v, e) for v, e in self._firmware_waiters if v == version]
-                for item in waiting:
-                    item[1].set()
-                    self._firmware_waiters.remove(item)
             async_dispatcher_send(self.hass, signal_firmware(self.client_id))
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("Could not read the adopt message of %s: %s", self.client_id, err)
+        # A panel that just took an update announces itself again when it restarts.
+        waiting, self._announce_waiters = self._announce_waiters, []
+        for event in waiting:
+            event.set()
 
     def _update_device_version(self, version: str) -> None:
         """Show the firmware version on the device page, and follow it when it changes."""

@@ -36,7 +36,6 @@ const WS = {
   libraryDelete: "oxrs_touchpanel/editor/library_delete",
   device: "oxrs_touchpanel/editor/device",
   restart: "oxrs_touchpanel/editor/restart",
-  firmwareInstall: "oxrs_touchpanel/editor/firmware_install",
   addDiscovered: "oxrs_touchpanel/editor/add_discovered",
   deletePanel: "oxrs_touchpanel/editor/delete_panel",
   suggestions: "oxrs_touchpanel/editor/suggestions",
@@ -46,6 +45,40 @@ const WS = {
 };
 // While a firmware update runs, how often the Device sheet asks how it is going.
 const DEVICE_POLL_MS = 2000;
+
+// What a chosen firmware file says about itself, read here so the page can say at once
+// whether it is the right kind of file. The server checks it again before sending it.
+// An ESP32 app image: 0xE9, the chip id at 12, and an app description (magic 0xABCD5432)
+// at 32 holding the build time (at 112) and date (at 128).
+function inspectFirmware(buffer, name, expectedChip, limits) {
+  const bytes = new Uint8Array(buffer);
+  const u32 = (o) => ((bytes[o] | (bytes[o + 1] << 8) | (bytes[o + 2] << 16) | (bytes[o + 3] << 24)) >>> 0);
+  const text = (o, n) => {
+    let s = "";
+    for (let i = o; i < o + n && i < bytes.length && bytes[i]; i++) s += String.fromCharCode(bytes[i]);
+    return s.trim();
+  };
+  const chips = { 0: "ESP32", 9: "ESP32-S3" };
+  const info = { name, size: bytes.length, buffer, problem: null };
+  const lower = name.toLowerCase();
+  if (lower.includes("_flash") || lower.endsWith("flash.bin")) {
+    info.problem = "This is the whole-flash image, for flashing over USB. Choose the file ending in _OTA.bin.";
+  } else if (bytes.length < limits.min || bytes.length > limits.max) {
+    info.problem = `This file is ${bytes.length} bytes, which is not a firmware image.`;
+  } else if (bytes[0] !== 0xe9) {
+    info.problem = "This is not an ESP32 firmware image.";
+  } else if (u32(32) !== 0xabcd5432) {
+    info.problem = "This is not an app image (a bootloader or whole-flash image?). Choose the file ending in _OTA.bin.";
+  } else {
+    const chip = bytes[12] | (bytes[13] << 8);
+    info.chip = chips[chip] || `chip ${chip}`;
+    info.built = `${text(128, 16)} ${text(112, 16)}`.trim();
+    if (expectedChip && info.chip !== expectedChip) {
+      info.problem = `This file is built for ${info.chip}, but this panel is ${expectedChip}.`;
+    }
+  }
+  return info;
+}
 const BUILTIN_ICONS = new Set([
   "_3dprint", "_blind", "_bulb", "_ceilingfan", "_coffee", "_door", "_feed", "_locked",
   "_music", "_onoff", "_pause", "_play", "_remote", "_slider", "_speaker", "_thermometer",
@@ -1673,7 +1706,7 @@ class OxrsPanelEditor extends HTMLElement {
     this._settingsForm = null;
     this._libraryState = null;
     this._sheetMode = "device";
-    this._deviceState = { entryId: this._stored.entry_id, data: null, error: null, confirm: null, version: null, busy: false };
+    this._deviceState = { entryId: this._stored.entry_id, data: null, error: null, confirm: null, file: null, busy: false };
     this._renderSheet();
     if (this._narrow) this._sheetEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
     await this._loadDevice();
@@ -1687,15 +1720,13 @@ class OxrsPanelEditor extends HTMLElement {
     if (render) this._renderSheet();
   }
 
-  async _loadDevice(refresh = false) {
+  async _loadDevice() {
     const state = this._deviceState;
     if (!state) return;
     clearTimeout(this._devicePoll);
     try {
-      state.data = await this._hass.callWS({ type: WS.device, entry_id: state.entryId, ...(refresh ? { refresh: true } : {}) });
+      state.data = await this._hass.callWS({ type: WS.device, entry_id: state.entryId });
       state.error = null;
-      const versions = (state.data.releases || []).map((r) => r.version);
-      if (!state.version || !versions.includes(state.version)) state.version = state.data.latest || versions[0] || null;
     } catch (err) {
       state.error = err?.message || String(err);
     }
@@ -1749,84 +1780,68 @@ class OxrsPanelEditor extends HTMLElement {
       ));
     }
 
-    // Firmware
+    // Firmware, from a file the user chooses
     sheet.append(el("h4", { class: "section" }, "Firmware"));
     if (job) {
-      const labels = { downloading: "Downloading", sending: "Sending to the panel", restarting: "Restarting", done: "Done", failed: "Failed" };
-      const line = `${labels[job.state] || job.state}${job.active && job.progress !== null && job.progress !== undefined ? ` · ${job.progress}%` : ""}`;
+      const labels = { sending: "Sending to the panel", restarting: "Restarting", done: "Done", failed: "Failed" };
       sheet.append(el(
         "div",
         { class: `job ${job.state}` },
-        el("div", { class: "job-head" }, `Firmware ${job.version}: ${line}`),
+        el("div", { class: "job-head" }, `${job.filename || "Firmware"}: ${labels[job.state] || job.state}`),
         job.message ? el("div", { class: "job-message" }, job.message) : null,
-        job.active ? el("div", { class: "job-bar" }, el("span", { style: { width: job.progress === null ? "100%" : `${job.progress}%` }, class: job.progress === null ? "indeterminate" : null })) : null
+        job.active ? el("div", { class: "job-bar" }, el("span", { class: "indeterminate", style: { width: "100%" } })) : null
       ));
       if (job.active) {
         sheet.append(el("p", { class: "hint" }, "Keep the panel powered until it comes back. You can close this - the update carries on."));
       }
     }
-    if (!data.build) {
-      sheet.append(el("p", { class: "hint" }, data.hardware
-        ? "This panel hasn't said how it is connected yet, so the right firmware can't be chosen. It says so when it next starts up."
-        : "This panel hasn't said which board it is, so the right firmware can't be chosen."));
-    } else if (data.releases_error) {
-      sheet.append(el("p", { class: "hint error" }, data.releases_error));
-    } else if (!data.releases.length) {
-      sheet.append(el("p", { class: "hint" }, `No firmware release has a build for this panel (${data.build}).`));
-    } else {
-      const latest = data.releases.find((r) => r.version === data.latest);
-      const status = !data.firmware_version
-        ? "The panel hasn't reported which firmware it runs."
-        : latest && latest.newer
-          ? `Version ${latest.version} is available.`
-          : "Up to date with the latest release.";
-      sheet.append(el("p", { class: "hint" }, `${status} Build: ${data.build}.`));
-      const select = el(
-        "select",
-        { "aria-label": "Firmware version", disabled: busy },
-        data.releases.map((r) =>
-          el(
-            "option",
-            { value: r.version, selected: r.version === state.version },
-            `${r.version}${r.version === data.latest ? " (latest)" : ""}${r.prerelease ? " (pre-release)" : ""}${r.installed ? " - installed" : ""}${r.published ? ` · ${r.published}` : ""}`
-          )
-        )
-      );
-      select.addEventListener("change", () => { state.version = select.value; state.confirm = null; this._renderSheet(); });
-      const chosen = data.releases.find((r) => r.version === state.version);
-      sheet.append(el("div", { class: "field-label" }, "Version"), select);
-      if (chosen) {
-        sheet.append(el("p", { class: "hint" }, el("a", { href: chosen.url, target: "_blank", rel: "noreferrer" }, `What's in ${chosen.version}`)));
-      }
-      if (state.confirm === "install" && chosen) {
-        const notes = [
-          `Install firmware ${chosen.version} on ${data.title}?`,
-          chosen.installed ? " It is the version already installed; it will be installed again." : "",
-          chosen.newer === false && !chosen.installed ? " It is older than the one installed." : "",
-          chosen.prerelease ? " It is a pre-release: expect rough edges." : "",
-          " Home Assistant downloads it from the OXRS GitHub releases and sends it to the panel, which restarts. It takes a minute or two; don't unplug the panel meanwhile.",
-        ].join("");
+    sheet.append(el(
+      "p",
+      { class: "hint" },
+      "Choose the firmware file for this panel: the OTA image (a file ending in _OTA.bin)",
+      data.build ? el("span", {}, " of the ", el("b", {}, data.build), " build") : "",
+      data.chip ? `, built for ${data.chip}` : "",
+      ". It is checked, then sent to the panel, which restarts with it."
+    ));
+    const picker = el("input", { type: "file", accept: ".bin,application/octet-stream", "aria-label": "Firmware file", disabled: busy || state.busy });
+    picker.addEventListener("change", () => this._chooseFirmware(picker.files?.[0]));
+    sheet.append(picker);
+    const file = state.file;
+    if (file) {
+      const facts = [
+        `${(file.size / 1024).toFixed(0)} kB`,
+        file.chip ? `for ${file.chip}` : null,
+        file.built ? `built ${file.built}` : null,
+      ].filter(Boolean).join(" · ");
+      sheet.append(el("div", { class: `lib-details${file.problem ? " bad" : ""}` },
+        el("div", { class: "job-head" }, file.name),
+        el("div", { class: "job-message" }, facts),
+        file.problem ? el("p", { class: "hint error" }, file.problem) : null));
+    }
+    if (file && !file.problem) {
+      if (state.confirm === "install") {
         sheet.append(
-          el("p", { class: "hint error" }, notes),
+          el("p", { class: "hint error" },
+            `Install ${file.name} on ${data.title}? The panel restarts with it; it takes a minute or two. Don't unplug the panel meanwhile. ` +
+            "If the panel refuses the file, it keeps the firmware it has."),
           el(
             "div",
             { class: "actions" },
-            el("button", { class: "primary", disabled: state.busy, onclick: () => this._installFirmware(chosen.version) }, "Install"),
-            el("button", { onclick: () => { state.confirm = null; this._renderSheet(); } }, "Cancel")
+            el("button", { class: "primary", disabled: state.busy, onclick: () => this._installFirmware() }, state.busy ? "Sending…" : "Install"),
+            el("button", { disabled: state.busy, onclick: () => { state.confirm = null; this._renderSheet(); } }, "Cancel")
           )
         );
       } else {
         sheet.append(el(
           "div",
           { class: "actions" },
-          el("button", { class: "primary", disabled: !data.available || busy || !chosen, onclick: () => { state.confirm = "install"; this._renderSheet(); } },
-            chosen?.installed ? "Reinstall" : "Install"),
-          el("button", { disabled: busy, onclick: () => this._loadDevice(true) }, "Check for new releases")
+          el("button", { class: "primary", disabled: !data.available || busy, onclick: () => { state.confirm = "install"; this._renderSheet(); } }, "Install this file")
         ));
         if (!data.available) sheet.append(el("p", { class: "hint" }, "The panel must be online to take an update."));
       }
     }
-    sheet.append(el("p", { class: "hint" }, el("a", { href: data.releases_url, target: "_blank", rel: "noreferrer" }, "All firmware releases on GitHub")));
+    sheet.append(el("p", { class: "hint" }, "The official firmware files are published on ",
+      el("a", { href: data.releases_url, target: "_blank", rel: "noreferrer" }, "the OXRS touch panel firmware releases"), "."));
 
     // Delete
     sheet.append(el("h4", { class: "section" }, "Delete panel"));
@@ -1888,13 +1903,44 @@ class OxrsPanelEditor extends HTMLElement {
     if (this._deviceState === state) this._renderSheet();
   }
 
-  async _installFirmware(version) {
+  // Read the chosen file here, to say at once whether it is the right kind.
+  _chooseFirmware(chosen) {
     const state = this._deviceState;
+    if (!state || !chosen) return;
+    state.confirm = null;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (this._deviceState !== state) return;
+      state.file = inspectFirmware(reader.result, chosen.name, state.data?.chip, {
+        min: state.data?.min_size || 65536,
+        max: state.data?.max_size || 8388608,
+      });
+      this._renderSheet();
+    };
+    reader.onerror = () => {
+      state.file = { name: chosen.name, size: chosen.size, problem: "The file couldn't be read." };
+      this._renderSheet();
+    };
+    reader.readAsArrayBuffer(chosen);
+  }
+
+  // Upload the file to Home Assistant, which checks it again and starts the update.
+  async _installFirmware() {
+    const state = this._deviceState;
+    const file = state?.file;
+    if (!file || file.problem || state.busy) return;
     state.busy = true;
     this._renderSheet();
     try {
-      await this._hass.callWS({ type: WS.firmwareInstall, entry_id: state.entryId, version });
-      this._say(`Updating the panel to firmware ${version}.`);
+      const response = await this._hass.fetchWithAuth(state.data.upload_url, {
+        method: "POST",
+        body: file.buffer,
+        headers: { "Content-Type": "application/octet-stream", "X-Filename": file.name },
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.message || `The upload failed (HTTP ${response.status}).`);
+      this._say(`Updating the panel from ${file.name}.`);
+      state.file = null;
     } catch (err) {
       this._say(err?.message || String(err), true);
     }
@@ -2495,6 +2541,7 @@ button[disabled] { opacity: 0.5; cursor: default; }
 .lib-uses { margin: 0 0 4px; padding-left: 18px; font-size: 13px; }
 .job { border: 1px solid var(--divider-color); border-radius: 8px; padding: 8px 10px; margin: 4px 0 8px; font-size: 14px; }
 .job.failed { border-color: var(--error-color); }
+.lib-details.bad { border-color: var(--error-color); }
 .job.done { border-color: var(--success-color, #4caf50); }
 .job-head { font-weight: 500; }
 .job-message { color: var(--secondary-text-color); margin-top: 2px; }

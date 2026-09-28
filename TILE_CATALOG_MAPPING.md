@@ -1005,21 +1005,27 @@ view, which was removed.
   board, connection and firmware the panel announces in its retained adopt message
   (`firmware.version`, `network.ip`, `network.mode`, kept by `hub._note_adopt`; the
   version also goes onto the device page as sw_version). Restart (`editor/restart`) is
-  the Reboot button's MQTT `{"restart": true}`. Firmware (`firmware.py`): releases from
-  the GitHub API for OXRS-IO/OXRS-IO-TouchPanel-ESP32-FW, cached 6 h; the build is
-  `firmware.BUILDS[(hardware, mode)]` (platformio.ini envs; e.g. WT32S3-86S + wifi =
-  wt32-86s-wifi_ESP32-S3), the asset `OXRS-IO-TouchPanel-FW_<build>_v<version>_OTA.bin`.
-  The image is checked before sending (0xE9 magic, header chip id 0 = ESP32 / 9 =
-  ESP32-S3 must match the build, 64 kB-8 MB), then POSTed whole (Content-Length is
-  needed: the firmware's `_postApiOta` sizes `Update.begin` from it) to
-  `http://<ip>/api/ota` (OXRS-IO-API-ESP32-LIB; no auth by the firmware's design). 204
-  means written and restarting; the job completes when the panel announces the new
-  version (`hub.expect_firmware`), or fails after 5 minutes saying to check the panel.
-  `editor/firmware_install` checks online / build / address / release first and runs the
-  job in the background; the page polls `editor/device` every 2 s while it runs. The
-  `update` platform (`update.py`, device class firmware) offers the latest stable
-  release in HA's own update UI through the same code; the page can also pick a
-  pre-release or an older version.
+  the Reboot button's MQTT `{"restart": true}`. v2.5.0 took firmware from the GitHub
+  releases (and had an update entity); **since v2.7.0 it comes from a file the user
+  chooses**, and nothing is fetched from the internet - see below.
+- **Firmware from a file (v2.7.0).** The page reads the chosen file and says at once
+  whether it is the right kind (`inspectFirmware`); installing uploads it with
+  `hass.fetchWithAuth` to `FirmwareUploadView` (`POST /api/oxrs_touchpanel/firmware/
+  <entry_id>`, logged-in admins; HTTP rather than websocket because an image is a few MB;
+  HA takes bodies up to 16 MB). The view refuses (4xx `{message, code}`) when a job runs,
+  the panel is offline or has no address, or `firmware.check_image` fails: a `_FLASH`
+  file name (the whole-flash USB image), size outside 64 kB-8 MB, no 0xE9, no app
+  description (`esp_app_desc_t` magic 0xABCD5432 at offset 32 - a bootloader or a
+  whole-flash image has none), or a chip id (offset 12: 0 = ESP32, 9 = ESP32-S3) other
+  than the board's (`firmware.CHIPS`; an unknown board skips this, the panel's own
+  Update still validates). Otherwise 202 and the job runs in the background: POST whole
+  to `http://<ip>/api/ota` (Content-Length needed: `_postApiOta` sizes `Update.begin`
+  from it; no auth by the firmware's design), then wait for the panel's next adopt
+  message (`hub.expect_announce`, any version: a chosen file's version isn't known
+  beforehand), reporting the version before and after; failing after 5 minutes. The
+  page shows the build name whose `_OTA.bin` fits (`firmware.BUILDS`) and the build date
+  read from the file. The v2.5.0 update entity is removed from the registry at setup
+  (`__init__._remove_retired_entities`).
 - **Found panels, deleting, favourites (v2.6.0).** Panels found on MQTT: the discovery
   flows of this domain waiting at "confirm" (`editor.discovered_panels`; the mqtt step
   now puts the board in its title placeholders) come with `editor/panels`; "Add panel"
