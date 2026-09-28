@@ -13,9 +13,10 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter
+from collections.abc import Mapping
 from typing import Any
 
-from .const import CONF_ENTITY_ID, CONF_SCREEN, CONF_SPAN, CONF_TILE, CONF_TYPE
+from .const import CONF_ENTITY_ID, CONF_SCREEN, CONF_SPAN, CONF_TILE, CONF_TYPE, SETTINGS_KEYS
 from .grid import clipped, covered, tile_span
 from .tiles import TILE_TYPES
 
@@ -30,12 +31,23 @@ def fingerprint(value: Any) -> str:
 
 
 def layout_fingerprint(
-    tiles: list[dict[str, Any]], screen_names: Any, screen_colors: Any
+    tiles: list[dict[str, Any]], screen_names: Any, screen_colors: Any, settings: Any = None
 ) -> str:
-    """The fingerprint of everything the editor page saves: tiles, screen names and colours."""
+    """The fingerprint of everything the editor page saves: tiles, screen names and
+    colours, and the panel settings."""
     return fingerprint(
-        {"tiles": tiles, "screen_names": screen_names or {}, "screen_colors": screen_colors or {}}
+        {
+            "tiles": tiles,
+            "screen_names": screen_names or {},
+            "screen_colors": screen_colors or {},
+            "settings": settings or {},
+        }
     )
+
+
+def stored_settings(options: Mapping[str, Any]) -> dict[str, Any]:
+    """The panel settings part of the options, as stored (SETTINGS_KEYS that are set)."""
+    return {key: options[key] for key in SETTINGS_KEYS if key in options}
 
 
 def _is_screen_key(key: Any) -> bool:

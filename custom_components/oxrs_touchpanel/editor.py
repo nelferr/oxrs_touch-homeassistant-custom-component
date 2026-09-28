@@ -14,7 +14,8 @@ form, which the page renders with HA's own form element. Submitting it goes thro
 the dialog's own input handling, so a tile made here is the tile the dialog would
 make. Edits are staged in the page and saved with one "Apply to panel", which the
 server checks again (drafts.py) and refuses if the tiles changed in the dialog since
-the page loaded them.
+the page loaded them. The panel settings (timeouts, brightness, colours, temperature
+correction) work the same way: the dialog's own form, staged, previewed, applied.
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ from .const import (
     CONF_ENTITY_ID,
     CONF_ICON,
     CONF_LABEL,
+    CONF_PANEL_SETTINGS,
     CONF_PLAYLISTS,
     CONF_SCREEN,
     CONF_SCREEN_COLORS,
@@ -51,8 +53,16 @@ from .const import (
     FIELD_LARGER,
     LIBRARY_DATA_KEY,
     MAX_PLAYLISTS,
+    PANEL_SETTINGS,
+    SETTINGS_KEYS,
 )
-from .drafts import clean_screens, draft_problems, layout_fingerprint, screens_problems
+from .drafts import (
+    clean_screens,
+    draft_problems,
+    layout_fingerprint,
+    screens_problems,
+    stored_settings,
+)
 from .grid import (
     FOOTER_HEIGHT,
     ONE,
@@ -78,6 +88,8 @@ WS_PREVIEW = f"{DOMAIN}/editor/preview"
 WS_TILE_FORM = f"{DOMAIN}/editor/tile_form"
 WS_BUILD_TILE = f"{DOMAIN}/editor/build_tile"
 WS_APPLY = f"{DOMAIN}/editor/apply"
+WS_SETTINGS_FORM = f"{DOMAIN}/editor/settings_form"
+WS_BUILD_SETTINGS = f"{DOMAIN}/editor/build_settings"
 
 # The background image field, as the dialog's background step names it.
 BACKGROUND_FIELD = "background_image_name"
@@ -101,7 +113,15 @@ async def async_setup_editor(hass: HomeAssistant, version: str) -> None:
             # update is picked up while an unchanged page can still be cached.
             [StaticPathConfig(STATIC_URL, str(FRONTEND_DIR), cache_headers=False)]
         )
-        for handler in (ws_panels, ws_preview, ws_tile_form, ws_build_tile, ws_apply):
+        for handler in (
+            ws_panels,
+            ws_preview,
+            ws_tile_form,
+            ws_build_tile,
+            ws_apply,
+            ws_settings_form,
+            ws_build_settings,
+        ):
             websocket_api.async_register_command(hass, handler)
         hass.data[_REGISTERED] = True
 
@@ -164,19 +184,21 @@ def panel_view(
     tiles: list[dict[str, Any]] | None = None,
     screen_names: dict[str, str] | None = None,
     screen_colors: dict[str, Any] | None = None,
+    settings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Everything the editor draws for one panel.
 
-    tiles, screen_names and screen_colors, when given, are an unsaved draft: it is
-    drawn through the same hub code as the stored config, so the preview is what
-    applying it would send.
+    tiles, screen_names, screen_colors and settings, when given, are an unsaved
+    draft: it is drawn through the same hub code as the stored config, so the preview
+    is what applying it would send.
     """
     stored = panel.tiles
     stored_names, stored_colours = _stored_screens(panel)
+    stored_panel_settings = stored_settings(panel.entry.options)
     tiles = stored if tiles is None else tiles
     names = stored_names if screen_names is None else screen_names
     colours = stored_colours if screen_colors is None else screen_colors
-    conf = panel.build_conf(tiles, screen_names=names, screen_colors=colours)
+    conf = panel.build_conf(tiles, screen_names=names, screen_colors=colours, settings=settings)
     states = panel.build_tile_states(tiles)
     cols, rows = panel.layout["horizontal"], panel.layout["vertical"]
     hardware = getattr(panel, "_reported_hardware", None) or panel.hardware
@@ -236,7 +258,8 @@ def panel_view(
         "config_tiles": stored,
         "config_screen_names": stored_names,
         "config_screen_colors": stored_colours,
-        "fingerprint": layout_fingerprint(stored, stored_names, stored_colours),
+        "config_settings": stored_panel_settings,
+        "fingerprint": layout_fingerprint(stored, stored_names, stored_colours, stored_panel_settings),
         # The screens' own names and colours as drawn (the conf's label falls back to
         # the panel title, so the page needs the raw values to edit them).
         "screen_names": names,
@@ -396,6 +419,12 @@ async def _labels(hass: HomeAssistant) -> dict[str, Any]:
                 },
                 "descriptions": details.get("data_description", {}),
             }
+        settings = steps.get("panel_settings", {})
+        out["settings"] = {
+            "labels": settings.get("data", {}),
+            "descriptions": settings.get("data_description", {}),
+            "description": settings.get("description", ""),
+        }
         hass.data[_LABELS] = out
     return hass.data[_LABELS]
 
@@ -442,6 +471,8 @@ _DRAFT = {
     # Screen names and colours, as stored ({"<screen>": ...}); absent means unchanged.
     vol.Optional("screen_names"): dict,
     vol.Optional("screen_colors"): dict,
+    # The panel settings part of the options, as stored (SETTINGS_KEYS); absent means unchanged.
+    vol.Optional("settings"): dict,
 }
 
 
@@ -456,7 +487,13 @@ def ws_preview(hass: HomeAssistant, connection: websocket_api.ActiveConnection, 
         return
     try:
         view = panel_view(
-            hass, msg["entry_id"], panel, msg["tiles"], msg.get("screen_names"), msg.get("screen_colors")
+            hass,
+            msg["entry_id"],
+            panel,
+            msg["tiles"],
+            msg.get("screen_names"),
+            msg.get("screen_colors"),
+            msg.get("settings"),
         )
     except Exception as err:  # noqa: BLE001 - a bad draft must not break the page
         _LOGGER.exception("Could not preview a draft for %s", panel.entry.title)
@@ -629,31 +666,138 @@ async def ws_build_tile(hass: HomeAssistant, connection: websocket_api.ActiveCon
 @websocket_api.require_admin
 @callback
 def ws_apply(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
-    """Save a draft's tiles and screens. The entry reloads and the panel is sent them once."""
+    """Save a draft's tiles, screens and settings. The entry reloads and the panel is sent them once."""
     panel = _panel(hass, msg["entry_id"])
     if panel is None:
         connection.send_error(msg["id"], "not_found", "That panel is not set up and running.")
         return
     stored_names, stored_colours = _stored_screens(panel)
-    if layout_fingerprint(panel.tiles, stored_names, stored_colours) != msg["fingerprint"]:
+    stored_panel_settings = stored_settings(panel.entry.options)
+    if (
+        layout_fingerprint(panel.tiles, stored_names, stored_colours, stored_panel_settings)
+        != msg["fingerprint"]
+    ):
         connection.send_error(
             msg["id"],
             "changed_elsewhere",
-            "This panel's tiles or screens were changed somewhere else since this page loaded "
-            "them. Discard these changes and make them again.",
+            "This panel's tiles, screens or settings were changed somewhere else since this "
+            "page loaded them. Discard these changes and make them again.",
         )
         return
     names = msg.get("screen_names", stored_names)
     colours = msg.get("screen_colors", stored_colours)
     cols, rows = panel.layout["horizontal"], panel.layout["vertical"]
     problems = draft_problems(panel.tiles, msg["tiles"], cols, rows) + screens_problems(names, colours, stored_names, stored_colours)
+    settings = msg.get("settings")
+    if settings is not None and settings != stored_panel_settings:
+        # Changed settings go through the dialog's form again; unchanged ones stay as
+        # stored, so a hand-edited value cannot block every save.
+        settings, problem = _checked_settings(panel, settings)
+        if problem:
+            problems.append(f"Panel settings: {problem}.")
+    else:
+        settings = stored_panel_settings
     if problems:
         connection.send_error(msg["id"], "invalid", " ".join(problems))
         return
     names, colours = clean_screens(names, colours)
-    options = dict(panel.entry.options)
+    options = {k: v for k, v in panel.entry.options.items() if k not in SETTINGS_KEYS}
+    options.update(settings)
     options[CONF_TILES] = msg["tiles"]
     options[CONF_SCREEN_NAMES] = names
     options[CONF_SCREEN_COLORS] = colours
     hass.config_entries.async_update_entry(panel.entry, options=options)
     connection.send_result(msg["id"], {"ok": True})
+
+
+# ── panel settings ────────────────────────────────────────────────────────
+
+
+def _settings_options(panel: Any, settings: Any) -> dict[str, Any]:
+    """The panel's options with a draft's settings in place of the stored ones."""
+    options = dict(panel.entry.options)
+    if isinstance(settings, dict):
+        options = {k: v for k, v in options.items() if k not in SETTINGS_KEYS}
+        options.update(settings)
+    return options
+
+
+def _settings_from_input(data: dict[str, Any]) -> dict[str, Any]:
+    """Validated form answers as the dialog stores them (the SETTINGS_KEYS part)."""
+    from .config_flow import OxrsOptionsFlow
+
+    return stored_settings(OxrsOptionsFlow._panel_settings_options({}, data))
+
+
+def _checked_settings(panel: Any, settings: Any) -> tuple[dict[str, Any], str | None]:
+    """Stored-shape settings sent by the page, run through the dialog's form again.
+
+    Returns the settings as the dialog would store them, and the reason when the
+    form refuses them.
+    """
+    from .config_flow import OxrsOptionsFlow
+
+    if not isinstance(settings, dict):
+        return {}, "not a mapping"
+    values = settings.get(CONF_PANEL_SETTINGS, {})
+    if not isinstance(values, dict):
+        return {}, "the display settings are not a mapping"
+    answers = {k: values[k] for k in PANEL_SETTINGS if k in values}
+    for key in SETTINGS_KEYS:
+        if key != CONF_PANEL_SETTINGS and key in settings:
+            answers[key] = settings[key]
+    # Anything left out takes the value the form starts with for this draft.
+    try:
+        schema = OxrsOptionsFlow._panel_settings_schema(_settings_options(panel, settings))
+        data = schema(answers)
+    except vol.Invalid as err:
+        return {}, "; ".join(f"{field}: {message}" for field, message in _errors(err).items())
+    return _settings_from_input(data), None
+
+
+_SETTINGS_DRAFT = {
+    vol.Required("entry_id"): str,
+    # The draft's settings, stored shape; absent or None means the stored ones.
+    vol.Optional("settings"): vol.Any(None, dict),
+}
+
+
+@websocket_api.websocket_command({vol.Required("type"): WS_SETTINGS_FORM, **_SETTINGS_DRAFT})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_settings_form(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """The dialog's panel settings form, filled in from the draft's settings."""
+    panel = _panel(hass, msg["entry_id"])
+    if panel is None:
+        connection.send_error(msg["id"], "not_found", "That panel is not set up and running.")
+        return
+    from .config_flow import OxrsOptionsFlow
+
+    schema = OxrsOptionsFlow._panel_settings_schema(_settings_options(panel, msg.get("settings")))
+    labels = await _labels(hass)
+    connection.send_result(msg["id"], {"schema": serialize_schema(schema), **labels["settings"]})
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): WS_BUILD_SETTINGS, **_SETTINGS_DRAFT, vol.Required("input"): dict}
+)
+@websocket_api.require_admin
+@callback
+def ws_build_settings(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """Turn a submitted settings form into the settings the dialog would have saved.
+
+    Replies {"settings": ...} in the stored shape, or {"errors": {field: message}}.
+    """
+    panel = _panel(hass, msg["entry_id"])
+    if panel is None:
+        connection.send_error(msg["id"], "not_found", "That panel is not set up and running.")
+        return
+    from .config_flow import OxrsOptionsFlow
+
+    schema = OxrsOptionsFlow._panel_settings_schema(_settings_options(panel, msg.get("settings")))
+    try:
+        data = schema(msg["input"])
+    except vol.Invalid as err:
+        connection.send_result(msg["id"], {"errors": _errors(err)})
+        return
+    connection.send_result(msg["id"], {"settings": _settings_from_input(data)})

@@ -6,8 +6,8 @@
 // changes too - so this page cannot drift from the panel. Tile forms are built by the
 // options dialog's own code and rendered with Home Assistant's own <ha-form>.
 //
-// Edits are staged: they change a draft (tiles, screen names and colours) that is
-// drawn as a preview, and nothing reaches the panel until "Apply to panel", which
+// Edits are staged: they change a draft (tiles, screen names and colours, the panel
+// settings) that is drawn as a preview, and nothing reaches the panel until "Apply to panel", which
 // sends the whole draft once. Tiles move by dragging (mouse), press-and-hold then
 // drag (touch - a plain swipe still changes screens), or the Move button - to another
 // screen too: while dragging, hover over the arrows (or past the screen's side) to
@@ -28,6 +28,8 @@ const WS = {
   tileForm: "oxrs_touchpanel/editor/tile_form",
   buildTile: "oxrs_touchpanel/editor/build_tile",
   apply: "oxrs_touchpanel/editor/apply",
+  settingsForm: "oxrs_touchpanel/editor/settings_form",
+  buildSettings: "oxrs_touchpanel/editor/build_settings",
 };
 const BUILTIN_ICONS = new Set([
   "_3dprint", "_blind", "_bulb", "_ceilingfan", "_coffee", "_door", "_feed", "_locked",
@@ -56,7 +58,7 @@ const DRAG_START_PX = 6;
 // the page changes screen with the tile still held.
 const EDGE_HOVER_MS = 600;
 // Sheet modes that hold a form being filled in; the data refreshing must not wipe them.
-const FORM_MODES = new Set(["form", "playlists", "screen"]);
+const FORM_MODES = new Set(["form", "playlists", "screen", "settings"]);
 
 // A colour the firmware treats as set: pure black means "unset, inherit".
 function colour(rgb) {
@@ -117,6 +119,15 @@ function ensureHaForm() {
     })();
   }
   return haFormReady;
+}
+
+// A value as JSON with its keys sorted, to tell whether two form answers differ.
+function stable(value) {
+  if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${stable(value[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 // The values a serialized form starts with: its defaults and suggested values.
@@ -247,6 +258,7 @@ class OxrsPanelEditor extends HTMLElement {
         tiles: this._draft.tiles,
         screen_names: this._draft.screen_names,
         screen_colors: this._draft.screen_colors,
+        settings: this._draft.settings,
       });
     } catch (err) {
       this._say(`Couldn't draw the changes: ${err?.message || err}`, true);
@@ -286,6 +298,7 @@ class OxrsPanelEditor extends HTMLElement {
         tiles: clone(stored.config_tiles),
         screen_names: clone(stored.config_screen_names || {}),
         screen_colors: clone(stored.config_screen_colors || {}),
+        settings: clone(stored.config_settings || {}),
         changes: 0,
       };
     }
@@ -298,13 +311,14 @@ class OxrsPanelEditor extends HTMLElement {
     this._dropUndo();
   }
 
-  // change: any of {tiles, screen_names, screen_colors}, replacing the draft's.
+  // change: any of {tiles, screen_names, screen_colors, settings}, replacing the draft's.
   async _commit(change, label) {
     const draft = this._startDraft();
     const before = {
       tiles: clone(draft.tiles),
       screen_names: clone(draft.screen_names),
       screen_colors: clone(draft.screen_colors),
+      settings: clone(draft.settings),
       changes: draft.changes,
     };
     Object.assign(draft, change);
@@ -314,6 +328,7 @@ class OxrsPanelEditor extends HTMLElement {
     this._selected = null;
     this._sheetMode = null;
     this._form = null;
+    this._settingsForm = null;
     await this._refreshPreview();
     if (label) this._offerUndo(before, label);
   }
@@ -341,6 +356,7 @@ class OxrsPanelEditor extends HTMLElement {
     this._draft.tiles = this._undo.tiles;
     this._draft.screen_names = this._undo.screen_names;
     this._draft.screen_colors = this._undo.screen_colors;
+    this._draft.settings = this._undo.settings;
     this._draft.changes = this._undo.changes;
     this._dropUndo();
     if (!this._draft.changes) this._clearDraft();
@@ -353,6 +369,8 @@ class OxrsPanelEditor extends HTMLElement {
     this._selected = null;
     this._sheetMode = null;
     this._form = null;
+    this._screenForm = null;
+    this._settingsForm = null;
     this._say(null);
     this._renderAll();
     // The stored tiles may have moved on meanwhile; show them as they are now.
@@ -370,6 +388,7 @@ class OxrsPanelEditor extends HTMLElement {
         tiles: this._draft.tiles,
         screen_names: this._draft.screen_names,
         screen_colors: this._draft.screen_colors,
+        settings: this._draft.settings,
         fingerprint: this._draft.base,
       });
       this._clearDraft();
@@ -430,6 +449,8 @@ class OxrsPanelEditor extends HTMLElement {
     this._selected = null;
     this._sheetMode = null;
     this._form = null;
+    this._screenForm = null;
+    this._settingsForm = null;
     this._renderAll();
   }
 
@@ -473,7 +494,8 @@ class OxrsPanelEditor extends HTMLElement {
       { class: "info" },
       el("span", { class: "name" }, view.title),
       el("span", {}, `${view.hardware || "board not reported"} · ${grid.cols} × ${grid.rows} tiles`),
-      view.available ? null : el("span", { class: "offline" }, "offline")
+      view.available ? null : el("span", { class: "offline" }, "offline"),
+      el("button", { class: "settings-button", onclick: () => this._openSettings() }, "Panel settings")
     ));
 
     const track = el("div", { class: "track" });
@@ -1033,9 +1055,14 @@ class OxrsPanelEditor extends HTMLElement {
     else if (pending) this._renderAll();
   }
 
+  // A tile, screen or settings form is being filled in.
+  get _formOpen() {
+    return FORM_MODES.has(this._sheetMode) && !!(this._form || this._screenForm || this._settingsForm);
+  }
+
   // ── screens ───────────────────────────────────────────────────────────
   async _openScreen(screenNumber) {
-    if (FORM_MODES.has(this._sheetMode) && (this._form || this._screenForm)) {
+    if (this._formOpen) {
       this._say("Finish or cancel the open form first.", true);
       return;
     }
@@ -1133,11 +1160,119 @@ class OxrsPanelEditor extends HTMLElement {
     this._say(`Changed screen ${form.screen}. Not on the panel until you apply.`);
   }
 
+  // ── panel settings ────────────────────────────────────────────────────
+  // The dialog's own "Panel display settings" form, filled in from the draft.
+  async _openSettings() {
+    if (this._formOpen) {
+      this._say("Finish or cancel the open form first.", true);
+      return;
+    }
+    if (!this._stored) return;
+    this._moving = null;
+    this._selected = null;
+    this._markSelected();
+    this._sheetMode = "settings";
+    const form = { spec: null, data: {}, start: null, error: null, fieldErrors: {}, ready: null };
+    this._settingsForm = form;
+    this._renderSheet();
+    if (this._narrow) this._sheetEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    const ready = await ensureHaForm();
+    try {
+      const spec = await this._hass.callWS({
+        type: WS.settingsForm,
+        entry_id: this._stored.entry_id,
+        settings: this._draft?.settings ?? null,
+      });
+      Object.assign(form, { spec, data: initialData(spec.schema), ready });
+      form.start = stable(form.data);
+    } catch (err) {
+      Object.assign(form, { error: err?.message || String(err), ready });
+    }
+    if (this._settingsForm === form) this._renderSheet();
+  }
+
+  _renderSettingsForm() {
+    const sheet = this._sheetEl;
+    const form = this._settingsForm;
+    sheet.append(el("h3", {}, "Panel settings"));
+    const back = () => el("div", { class: "actions" }, el("button", { onclick: () => this._closeSettings() }, "Back"));
+    if (form.ready === null) {
+      sheet.append(el("p", { class: "hint" }, "Loading the form…"));
+      return;
+    }
+    if (!form.spec) {
+      sheet.append(el("p", { class: "hint error" }, form.error || "Couldn't load the form."), back());
+      return;
+    }
+    if (!form.ready) {
+      sheet.append(
+        el("p", { class: "hint error" }, "Home Assistant's form fields didn't load on this page. Reload the page, or use the panel's Configure dialog."),
+        back()
+      );
+      return;
+    }
+    const spec = form.spec;
+    if (spec.description) sheet.append(el("p", { class: "hint" }, spec.description));
+    const haForm = document.createElement("ha-form");
+    haForm.computeLabel = (field) => spec.labels?.[field.name] || field.name;
+    haForm.computeHelper = (field) => spec.descriptions?.[field.name];
+    haForm.hass = this._hass;
+    haForm.schema = spec.schema;
+    haForm.data = form.data;
+    haForm.error = form.fieldErrors || {};
+    haForm.addEventListener("value-changed", (e) => {
+      form.data = e.detail.value;
+    });
+    this._haForm = haForm;
+    sheet.append(haForm);
+    if (form.error) sheet.append(el("p", { class: "hint error" }, form.error));
+    sheet.append(el(
+      "div",
+      { class: "actions" },
+      el("button", { class: "primary", onclick: () => this._saveSettings() }, "Save"),
+      el("button", { onclick: () => this._closeSettings() }, "Cancel")
+    ));
+  }
+
+  _closeSettings() {
+    this._settingsForm = null;
+    this._sheetMode = null;
+    if (this._draft && !this._draft.changes) this._clearDraft();
+    this._renderSheet();
+  }
+
+  async _saveSettings() {
+    const form = this._settingsForm;
+    if (!form?.spec || !this._stored) return;
+    if (stable(form.data) === form.start) return this._closeSettings(); // nothing changed
+    let result;
+    try {
+      result = await this._hass.callWS({
+        type: WS.buildSettings,
+        entry_id: this._stored.entry_id,
+        settings: this._draft?.settings ?? null,
+        input: form.data,
+      });
+    } catch (err) {
+      form.error = err?.message || String(err);
+      return this._renderSheet();
+    }
+    if (this._settingsForm !== form) return; // closed meanwhile
+    if (result.errors) {
+      form.error = result.errors.base || "Check the values marked below.";
+      form.fieldErrors = Object.fromEntries(Object.entries(result.errors).filter(([k]) => k !== "base"));
+      return this._renderSheet();
+    }
+    this._settingsForm = null;
+    await this._commit({ settings: result.settings }, null);
+    this._say("Changed the panel settings. Not on the panel until you apply.");
+  }
+
   // ── picking and the side sheet ────────────────────────────────────────
   _pick(selection) {
     if (Date.now() - (this._dragEndedAt || 0) < 400) return; // the click that ends a drag
     if (this._sheetMode === "move" && this._moving) return this._moveTo(selection);
-    if (FORM_MODES.has(this._sheetMode) && (this._form || this._screenForm)) {
+    if (this._formOpen) {
       this._say("Finish or cancel the open form first.", true);
       return;
     }
@@ -1180,6 +1315,7 @@ class OxrsPanelEditor extends HTMLElement {
       );
       return;
     }
+    if (this._sheetMode === "settings" && this._settingsForm) return this._renderSettingsForm();
     if (!view || !s) {
       sheet.append(el("p", { class: "hint" }, "Tap a tile to change, move or remove it, or an empty space to add a tile there. Drag a tile to move it (on a phone: press and hold it first); hold it over an arrow to take it to another screen. Tap a screen's name to rename or recolour it. Swipe, or use the arrows, to change screens; the last screen is a new one."));
       return;
@@ -1465,6 +1601,8 @@ select { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid 
 .info { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; color: var(--secondary-text-color); font-size: 14px; margin-bottom: 8px; }
 .info .name { color: var(--primary-text-color); font-size: 16px; font-weight: 500; }
 .offline { color: var(--error-color); }
+.settings-button { margin-left: auto; font: inherit; font-size: 14px; padding: 4px 10px; border-radius: 8px; border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); cursor: pointer; }
+.settings-button:hover { border-color: var(--primary-color); }
 .track { display: flex; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; }
 .track::-webkit-scrollbar { display: none; }
 .slide { flex: 0 0 100%; scroll-snap-align: start; display: flex; flex-direction: column; align-items: center; padding: 0 8px; box-sizing: border-box; }
