@@ -1042,5 +1042,18 @@ view, which was removed.
   `template` for a new tile and pre-fills the serialized form with it (`_prefill`: only
   values the form offers), choosing the template's size when it fits. Submitting is the
   ordinary `build_tile`, so a placed favourite is checked like any new tile.
+- **Keeping the panel across its reload (v2.7.1).** Saving a panel's options reloads its
+  entry, and while it reloads it is not in `hass.data[DOMAIN]`, so `editor/panels` left
+  it out. The page used to wait a fixed 1.5 s after apply and then keep "the same panel"
+  by list position - on a Raspberry Pi the reload was often still running, the panel was
+  missing, and the page fell back to another one and never looked again. Now
+  `editor/panels` also returns `unavailable` (entries of the domain not running, with
+  their state; `reloading` for setup_in_progress / not_loaded / unload_in_progress /
+  setup_retry), `editor/apply` returns the fingerprint of what it saved, and the page
+  keeps the panel by entry id (`_currentEntryId`, remembered in localStorage across
+  page reloads). `_choosePanel` waits - "reloading with the changes…", polling every
+  second for up to a minute - while the panel is missing but reloading, or still shows
+  the old fingerprint after an apply; a panel that failed to start is named with its
+  state instead of silently replaced.
 - **Not yet:** nothing from the dialog is left out; the dialog stays for those who prefer it.
 
