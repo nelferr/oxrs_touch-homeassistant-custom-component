@@ -1318,7 +1318,14 @@ class OxrsPanel:
         from homeassistant.helpers import device_registry as dr
 
         registry = dr.async_get(self.hass)
-        device = registry.async_get_device(identifiers={(DOMAIN, self.client_id)})
+        # async_get_device is deprecated (identifiers are only unique per config entry);
+        # its replacement is newer than the oldest Home Assistant this supports.
+        by_identifier = getattr(registry, "async_get_device_by_identifier", None)
+        device = (
+            by_identifier((DOMAIN, self.client_id), self.entry.entry_id)
+            if by_identifier is not None
+            else registry.async_get_device(identifiers={(DOMAIN, self.client_id)})
+        )
         if device is not None and device.sw_version != version:
             registry.async_update_device(device.id, sw_version=version)
 

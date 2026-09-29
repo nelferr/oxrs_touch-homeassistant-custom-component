@@ -1,17 +1,9 @@
-"""Favourite tiles, and the tile setups used most, for filling an empty place quickly.
+"""Favourite tiles, for filling an empty place quickly.
 
 Favourites are tiles the user keeps, shared by every panel (.storage/
-oxrs_touchpanel_favourites): the tile as it was, less its screen and position.
-
-"Frequently used" is worked out from the tiles already set up on every panel: tiles
-count as the same setup when they differ only in their place and in what they are
-bound to - the entity, and what follows from it (the label naming it, a sub-label or
-second sensor, a player's playlists) - since those normally change from panel to panel.
-What is left (type, icon, size, colours, background image, album art and the like) is
-the setup, and the ones seen most are offered first.
-
-Either is placed through the tile form, filled in from it, so it is checked like any
-other new tile.
+oxrs_touchpanel_favourites): the tile as it was, less its screen and position. One is
+placed through the tile form, filled in from it, so it is checked like any other new
+tile.
 """
 
 from __future__ import annotations
@@ -19,72 +11,27 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from collections.abc import Iterable
 from typing import Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
-from .const import (
-    CONF_ACTION_ENTITY,
-    CONF_ENTITY_ID,
-    CONF_INDICATOR_SECONDARY_ENTITY_ID,
-    CONF_LABEL,
-    CONF_PLAYLISTS,
-    CONF_SCREEN,
-    CONF_SUBLABEL_ENTITY_ID,
-    CONF_TILE,
-    CONF_TYPE,
-)
+from .const import CONF_SCREEN, CONF_TILE, CONF_TYPE
 from .tiles import TILE_TYPES
 
 STORAGE_KEY = "oxrs_touchpanel_favourites"
 STORAGE_VERSION = 1
 _DATA_KEY = "oxrs_touchpanel_favourites_store"
 MAX_FAVOURITES = 60
-MAX_FREQUENT = 8
 
 # Where a tile sits; never part of what is kept or compared.
 PLACE_KEYS = (CONF_SCREEN, CONF_TILE)
-# What a tile is bound to, and what follows from that binding.
-BINDING_KEYS = (
-    CONF_ENTITY_ID,
-    CONF_ACTION_ENTITY,
-    CONF_SUBLABEL_ENTITY_ID,
-    CONF_INDICATOR_SECONDARY_ENTITY_ID,
-    CONF_PLAYLISTS,
-    CONF_LABEL,
-)
-
-
 def _key(value: Any) -> str:
     return json.dumps(value, sort_keys=True, ensure_ascii=True, default=str)
 
 
 def without_place(tile: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in tile.items() if k not in PLACE_KEYS}
-
-
-def setup_of(tile: dict[str, Any]) -> dict[str, Any]:
-    """A tile's setup: the tile less its place and what it is bound to."""
-    return {k: v for k, v in tile.items() if k not in PLACE_KEYS + BINDING_KEYS}
-
-
-def frequent(tiles: Iterable[dict[str, Any]], limit: int = MAX_FREQUENT) -> list[dict[str, Any]]:
-    """The setups used most among these tiles, most first: [{"tile", "count"}].
-
-    Only tiles of a known type count (an old action tile can't be placed from the
-    form). Ties keep the order the setups were first seen in.
-    """
-    counts: dict[str, list[Any]] = {}
-    for tile in tiles:
-        if not isinstance(tile, dict) or tile.get(CONF_TYPE) not in TILE_TYPES:
-            continue
-        setup = setup_of(tile)
-        entry = counts.setdefault(_key(setup), [setup, 0])
-        entry[1] += 1
-    ranked = sorted(counts.values(), key=lambda e: -e[1])
-    return [{"tile": setup, "count": count} for setup, count in ranked[:limit]]
 
 
 class Favourites:
