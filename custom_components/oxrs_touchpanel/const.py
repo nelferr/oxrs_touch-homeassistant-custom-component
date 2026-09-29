@@ -61,6 +61,11 @@ CONF_ALBUM_ART = "album_art"
 # known to work. It is a setting rather than a constant because other firmware
 # builds may have a different MQTT buffer - the emulator, for one, swallows
 # 64 KB happily.
+# The stock firmware's MQTT receive buffer (MQTT_MAX_MESSAGE_SIZE in
+# OXRS-IO-MQTT-ESP32-LIB on an ESP32). The panel silently discards any message
+# bigger than this, header and topic included - it never arrives at all.
+PANEL_MQTT_BUFFER = 16384
+
 CONF_ALBUM_ART_BUDGET = "album_art_budget"
 DEFAULT_ALBUM_ART_BUDGET = 12000
 MIN_ALBUM_ART_BUDGET = 2048

@@ -71,6 +71,7 @@ from .const import (
     MIN_ALBUM_ART_ZOOM,
     MIN_TEMPERATURE_OFFSET,
     MODEL,
+    PANEL_MQTT_BUFFER,
     PANEL_SETTINGS,
     SETTINGS_KEYS,
     signal_available,
@@ -88,6 +89,13 @@ from .library import SharedMediaLibrary
 from .tiles import TILE_TYPES, TileType
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def mqtt_packet_size(topic: str, payload: str) -> int:
+    """Bytes a QoS 0 PUBLISH of this payload takes on the wire, header included."""
+    body = 2 + len(topic.encode("utf-8")) + len(payload.encode("utf-8"))
+    length_bytes = 1 if body < 128 else 2 if body < 16384 else 3 if body < 2097152 else 4
+    return 1 + length_bytes + body
 
 
 def _find_tile_type_for_domain(domain: str, tile_types: dict[str, Any]) -> str | None:
@@ -275,6 +283,15 @@ class OxrsPanel:
         self.firmware_job: firmware.FirmwareJob | None = None
         # Updates waiting for the panel to come back and announce itself.
         self._announce_waiters: list[asyncio.Event] = []
+        # The background push configuring the panel (_schedule_push), and whether
+        # the panel needs one the next time it is seen online: set when it goes
+        # offline or Home Assistant loses the broker, cleared when a push starts.
+        self._push_task: asyncio.Task | None = None
+        self._needs_push = True
+        # Pushes never interleave: a second one waits for the first to finish.
+        self._push_lock = asyncio.Lock()
+        # What has already been warned about for being too big for the panel.
+        self._size_warned: set[str] = set()
 
     @property
     def tiles(self) -> list[dict[str, Any]]:
@@ -520,8 +537,12 @@ class OxrsPanel:
             return False
         payload, encoded = built
 
-        await mqtt.async_publish(
-            self.hass, topic_cmnd(self.client_id), json.dumps(payload)
+        await self._async_publish(
+            topic_cmnd(self.client_id),
+            json.dumps(payload),
+            "album art",
+            "Lower \"Maximum size per image\" in the panel's album art settings "
+            f"to {PANEL_MQTT_BUFFER - 100} or less.",
         )
         first_upload = name not in self._album_art
         self._album_art[name] = revision
@@ -604,10 +625,15 @@ class OxrsPanel:
                 self.hass, topic_adopt(self.client_id), self._on_adopt
             )
         )
+        self._unsubs.append(
+            mqtt.async_subscribe_connection_status(self.hass, self._on_mqtt_connection)
+        )
         self._track_entities()
-        # Push config now in case the panel is already online.
-        # async_push_config handles: conf/ → addImage → seed_state
-        await self.async_push_config()
+        # Configure the panel now in case it is already online - unless the
+        # retained LWT message that answers the subscription above already asked
+        # for it (_on_lwt). Either way it is configured once, not twice.
+        if self._needs_push:
+            self._schedule_push()
 
     def _track_entities(self) -> None:
         """Track entity changes for tiles with entity bindings (old and new format)."""
@@ -652,13 +678,59 @@ class OxrsPanel:
 
     async def async_unload(self) -> None:
         """Tear down subscriptions and listeners."""
+        self._cancel_push()
         for unsub in self._unsubs:
             unsub()
         self._unsubs.clear()
 
+    @callback
+    def _schedule_push(self) -> None:
+        """Configure the panel in the background, replacing a push under way.
+
+        A newer push supersedes an older one: whatever the old one had sent, the
+        new one starts again from removing the screens.
+        """
+        self._needs_push = False
+        self._cancel_push()
+        self._push_task = self.hass.async_create_task(self.async_push_config())
+
+    @callback
+    def _cancel_push(self) -> None:
+        if self._push_task is not None and not self._push_task.done():
+            self._push_task.cancel()
+        self._push_task = None
+
+    async def _async_publish(self, topic: str, payload: str, what: str, hint: str) -> None:
+        """Publish to the panel, warning (once) about a message it cannot receive."""
+        size = mqtt_packet_size(topic, payload)
+        if size > PANEL_MQTT_BUFFER and what not in self._size_warned:
+            self._size_warned.add(what)
+            _LOGGER.warning(
+                "%s: the %s message is %d bytes, but the panel's firmware discards "
+                "any MQTT message over %d bytes, so the panel will never receive it. %s",
+                self.client_id,
+                what,
+                size,
+                PANEL_MQTT_BUFFER,
+                hint,
+            )
+        await mqtt.async_publish(self.hass, topic, payload)
+
     # ── outbound: HA -> panel ────────────────────────────────────────────────
     async def async_push_config(self) -> None:
-        """Build and publish the screens config, then seed tile states."""
+        """Configure the panel: screens and tiles, images and icons, tile states,
+        and album art last.
+
+        This is the OXRS start-up sequence (conf/ when the panel comes online,
+        then its images and icons, which it never keeps across a restart, then
+        state). Album art comes after the tile states because it is fetched from
+        each player and encoded here, which can take seconds; the tiles should
+        not sit blank waiting for it.
+        """
+        async with self._push_lock:
+            await self._async_push_config()
+
+    async def _async_push_config(self) -> None:
         screens = {tile[CONF_SCREEN] for tile in self.tiles}
 
         # Clean slate: remove every screen we manage (current + previously
@@ -679,15 +751,35 @@ class OxrsPanel:
             )
         self._pushed_screens = set(screens)
 
-        await mqtt.async_publish(
-            self.hass, topic_conf(self.client_id), json.dumps(self.build_conf())
+        await self._async_publish(
+            topic_conf(self.client_id),
+            json.dumps(self.build_conf()),
+            "configuration (conf/)",
+            "Its screens and tiles will not appear; spread the tiles over fewer "
+            "screens, or shorten labels.",
         )
         # Let the panel apply the config before seeding tile states.
         await asyncio.sleep(1)
+        # The panel holds no images after a restart, so until its art is sent
+        # again no tile may reference any (a tile naming an image the panel does
+        # not have is drawn blank).
+        self._album_art.clear()
+        self._album_art_meta.clear()
         # Step 1: register background images in panel memory before tiles reference them
-        await self.async_push_images_to_panel()
+        await self.async_push_images_to_panel(album_art=False)
         # Step 2: seed tile states (includes backgroundImage.name references)
         await self.async_seed_state()
+        # Step 3: album art, then the tiles showing it, which can now reference it.
+        if await self._async_push_album_art():
+            states = [
+                s
+                for s in self.build_tile_states(self.album_art_tiles)
+                if s.get("backgroundImage")
+            ]
+            if states:
+                await mqtt.async_publish(
+                    self.hass, topic_cmnd(self.client_id), json.dumps({"tiles": states})
+                )
 
     def build_conf(
         self,
@@ -869,9 +961,10 @@ class OxrsPanel:
                 payload_tiles.append(state)
         return payload_tiles
 
-    async def async_push_images_to_panel(self) -> None:
+    async def async_push_images_to_panel(self, album_art: bool = True) -> None:
         """Send background images AND custom icons actually used on THIS
-        panel (Step 1 of the OXRS two-step process: addImage / addIcon).
+        panel (Step 1 of the OXRS two-step process: addImage / addIcon), and
+        album art unless album_art is False (async_push_config sends it last).
         
         Images and icons live in the shared library (library.py), reusable
         across every configured panel - but each physical panel only needs
@@ -910,7 +1003,8 @@ class OxrsPanel:
 
         if not image_names and not icon_names:
             _LOGGER.debug("No shared images or icons referenced by this panel's tiles")
-            await self._async_push_album_art()
+            if album_art:
+                await self._async_push_album_art()
             return
 
         _LOGGER.debug(
@@ -931,8 +1025,11 @@ class OxrsPanel:
                     f"Sending image '{name}' to panel "
                     f"(format: {image.get('format')}, size: {image.get('size')} bytes)"
                 )
-                await mqtt.async_publish(
-                    self.hass, topic_cmnd(self.client_id), json.dumps(payload)
+                await self._async_publish(
+                    topic_cmnd(self.client_id),
+                    json.dumps(payload),
+                    f"image '{name}'",
+                    "Use a smaller image.",
                 )
                 await asyncio.sleep(0.2)  # small delay to avoid overwhelming the panel
 
@@ -945,8 +1042,11 @@ class OxrsPanel:
                 if not payload:
                     continue
                 _LOGGER.debug(f"Sending icon '{name}' to panel (size: {icon.get('size')} bytes)")
-                await mqtt.async_publish(
-                    self.hass, topic_cmnd(self.client_id), json.dumps(payload)
+                await self._async_publish(
+                    topic_cmnd(self.client_id),
+                    json.dumps(payload),
+                    f"icon '{name}'",
+                    "Use a smaller icon.",
                 )
                 await asyncio.sleep(0.2)
 
@@ -960,15 +1060,17 @@ class OxrsPanel:
                 exc_info=True
             )
 
-        await self._async_push_album_art()
+        if album_art:
+            await self._async_push_album_art()
 
-    async def _async_push_album_art(self) -> None:
+    async def _async_push_album_art(self) -> bool:
         """(Re)upload artwork for every album-art tile on this panel.
 
         Always forces: this runs when the panel has just (re)connected, and a
         panel keeps no images across a restart, so a cached revision here says
-        nothing about what the panel currently holds.
+        nothing about what the panel currently holds. Returns whether any was sent.
         """
+        sent = False
         seen: set[str] = set()
         for tile in self.album_art_tiles:
             target = self._art_target(tile)
@@ -977,9 +1079,10 @@ class OxrsPanel:
                     continue  # another tile of the same size already sent it
                 seen.add(target.name)
             try:
-                await self.async_refresh_album_art(tile, force=True)
+                sent = await self.async_refresh_album_art(tile, force=True) or sent
             except Exception as err:
                 _LOGGER.error(f"Error pushing album art: {err}", exc_info=True)
+        return sent
 
     async def _async_update_album_art_tile(
         self,
@@ -1251,16 +1354,40 @@ class OxrsPanel:
 
     @callback
     def _on_lwt(self, msg: mqtt.ReceiveMessage) -> None:
+        """Configure the panel each time it connects, as the OXRS docs describe.
+
+        The panel publishes {"online": true} when it connects, and the broker
+        publishes its {"online": false} will when it drops. A live "online" is
+        always a new connection, even when the matching "offline" never showed
+        up (a panel that restarts and reconnects before the broker notices it
+        went), so it always gets a push. A retained "online" is the broker
+        replaying the last state for a new subscription - this entry being set
+        up, or Home Assistant reconnecting to the broker - and only gets one if
+        the panel may have missed one.
+        """
         try:
             online = bool(json.loads(msg.payload).get("online", False))
         except (ValueError, TypeError, AttributeError):
             online = str(msg.payload).strip().lower() in ("online", "1", "true")
-        was_available = self.available
         self.available = online
         async_dispatcher_send(self.hass, signal_available(self.client_id))
-        # (Re)configure whenever the panel (re)connects.
-        if online and not was_available:
-            self.hass.async_create_task(self.async_push_config())
+        if not online:
+            # Whatever was being sent is lost; it gets everything when it is back.
+            self._cancel_push()
+            self._needs_push = True
+        elif not getattr(msg, "retain", False) or self._needs_push:
+            self._schedule_push()
+
+    @callback
+    def _on_mqtt_connection(self, connected: bool) -> None:
+        """Home Assistant lost or regained the broker.
+
+        While it is away the panel may restart unseen, so the retained "online"
+        replayed on reconnecting has to be treated as a new connection.
+        """
+        if not connected:
+            self._cancel_push()
+            self._needs_push = True
 
     @callback
     def _on_adopt(self, msg: mqtt.ReceiveMessage) -> None:
