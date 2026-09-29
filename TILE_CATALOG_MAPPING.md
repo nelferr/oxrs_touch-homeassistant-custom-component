@@ -1070,5 +1070,28 @@ view, which was removed.
   "reload to use the new version", and the define is guarded so it no longer throws.
   The device page's firmware version uses `async_get_device_by_identifier` where HA has
   it (`async_get_device` is deprecated, gone in 2027.8).
+- **Configuring a panel when it connects (v2.7.3).** Checked against the OXRS docs and the
+  firmware / OXRS-IO-MQTT-ESP32-LIB source: the panel subscribes to `conf/` and `cmnd/`,
+  then publishes `{"online":true}` retained on `stat/<id>/lwt` (its will is
+  `{"online":false}`), then its adopt message; it keeps no configuration, images or icons
+  across a restart, and the docs have the controller send `conf/` when it sees the panel
+  come online. The integration did that, but: at every entry setup (HA start, and every
+  Apply, which reloads the entry) it pushed twice at once - `async_setup` pushed, and the
+  retained "online" replayed for the new subscription also pushed, since `available`
+  starts False - so two remove/conf/image/art/state sequences interleaved; a live "online"
+  while already online (the panel back before the broker saw it go) got nothing; and tile
+  states were only sent after album art, which is fetched and encoded per player (up to
+  the 15 s fetch timeout each), so tiles sat without their states meanwhile. Now: a live
+  "online" (retain flag clear) always pushes; a retained one pushes only if the panel may
+  have missed one (`_needs_push`: set at start, on "offline" and when HA loses the broker
+  - `mqtt.async_subscribe_connection_status`); setup pushes only if nothing asked yet.
+  Pushes run in a background task that a newer one replaces, "offline" and unload cancel,
+  and a lock keeps direct pushes (button, editor) from interleaving. Order: remove, conf,
+  images and icons, every tile's state, then album art followed by the art tiles' states
+  again; the art cache is cleared first so no state names an image the panel lost.
+  `PANEL_MQTT_BUFFER` (16384, the library's `MQTT_MAX_MESSAGE_SIZE` on ESP32 - PubSubClient
+  drops a larger packet whole, header and topic counted): conf, images, icons and album
+  art over it are logged once per setup, still sent (other builds may take more - the
+  album art budget stays a setting). A 99-tile conf is about 9 KB.
 - **Not yet:** nothing from the dialog is left out; the dialog stays for those who prefer it.
 

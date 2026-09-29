@@ -74,6 +74,13 @@ Changes are staged until you press **Apply to panel**, which sends them to the p
 one go (or **Discard** to drop them). The library is the exception: it is shared by
 every panel, so adding or deleting there happens straight away, as in the dialog.
 
+Each time a panel starts or reconnects it is configured again, as the OXRS docs
+describe - the panel keeps nothing across a restart. It is sent its screens and tiles,
+then its background images and custom icons, then the state of every tile, and album
+art last, since that has to be fetched from each player first. If a message is too big
+for the panel's firmware (16 KB, including album art), the Home Assistant log says so:
+the panel would silently ignore it.
+
 ## Support
 
 - **Issues & Bug Reports** — [GitHub Issues](https://github.com/nelferr/oxrs_touch-homeassistant-custom-component/issues)
