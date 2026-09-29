@@ -337,8 +337,45 @@ def ws_panels(hass: HomeAssistant, connection: websocket_api.ActiveConnection, m
         _LOGGER.exception("Could not list the panels waiting to be added")
         discovered = []
     connection.send_result(
-        msg["id"], {"panels": panels, "types": tile_types(hass), "discovered": discovered}
+        msg["id"],
+        {
+            "panels": panels,
+            "types": tile_types(hass),
+            "discovered": discovered,
+            "unavailable": unavailable_panels(hass),
+        },
     )
+
+
+# While a panel reloads (after every apply: saving its options reloads it) it is briefly
+# not running; these states mean it is on its way back.
+_RELOADING_STATES = {"setup_in_progress", "not_loaded", "unload_in_progress", "setup_retry"}
+
+
+def unavailable_panels(hass: HomeAssistant) -> list[dict[str, Any]]:
+    """Panels that are set up but not running now - reloading, or failed to load.
+
+    So the page can wait for the one being edited instead of losing it.
+    """
+    running = hass.data.get(DOMAIN) or {}
+    out = []
+    try:
+        entries = hass.config_entries.async_entries(DOMAIN, include_ignore=False, include_disabled=False)
+    except Exception:  # noqa: BLE001 - only a help to the page
+        return out
+    for entry in entries:
+        if entry.entry_id in running:
+            continue
+        state = getattr(entry.state, "value", entry.state)
+        out.append(
+            {
+                "entry_id": entry.entry_id,
+                "title": entry.title,
+                "state": str(state),
+                "reloading": str(state) in _RELOADING_STATES,
+            }
+        )
+    return out
 
 
 # ── editing ───────────────────────────────────────────────────────────────
@@ -778,7 +815,10 @@ def ws_apply(hass: HomeAssistant, connection: websocket_api.ActiveConnection, ms
     options[CONF_SCREEN_NAMES] = names
     options[CONF_SCREEN_COLORS] = colours
     hass.config_entries.async_update_entry(panel.entry, options=options)
-    connection.send_result(msg["id"], {"ok": True})
+    # Saving reloads the panel. The page waits until the panel is back with this
+    # fingerprint, so it neither shows the old layout nor loses the panel meanwhile.
+    saved = layout_fingerprint(options[CONF_TILES], names, colours, stored_settings(options))
+    connection.send_result(msg["id"], {"ok": True, "fingerprint": saved})
 
 
 # ── panel settings ────────────────────────────────────────────────────────

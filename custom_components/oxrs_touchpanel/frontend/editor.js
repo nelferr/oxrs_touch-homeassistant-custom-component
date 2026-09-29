@@ -93,8 +93,30 @@ const CONTROLS = {
   buttonLeftRight: ["left", "right"],
 };
 const REFRESH_MS = 1000;
-// After an apply the integration reloads the panel; give it a moment before reading back.
-const APPLY_SETTLE_MS = 1500;
+// Saving a panel's changes reloads it, and while it reloads it is briefly not running.
+// The page keeps the panel being edited (by its entry id, not its place in the list),
+// asks again this often until it is back with the changes, and gives up waiting after a
+// minute. Found panels being added are waited for the same way.
+const RELOAD_POLL_MS = 1000;
+const RELOAD_WAIT_MS = 60000;
+// The panel last shown, so a reload of the page comes back to it.
+const LAST_PANEL_KEY = "oxrs-panels:last-panel";
+
+function remember(key, value) {
+  try {
+    if (value) window.localStorage.setItem(key, value);
+  } catch (err) {
+    // storage may be off; only a convenience
+  }
+}
+
+function recall(key) {
+  try {
+    return window.localStorage.getItem(key);
+  } catch (err) {
+    return null;
+  }
+}
 const UNDO_MS = 8000;
 // Touch: how long a press must be held before it picks a tile up, and how far a
 // finger may wander before that, which is a swipe rather than a press.
@@ -219,6 +241,10 @@ class OxrsPanelEditor extends HTMLElement {
     this._lastFetch = 0;
     this._watched = new Map();
     this._resize = new ResizeObserver(() => this._fit());
+    this._currentEntryId = recall(LAST_PANEL_KEY); // the panel being shown / edited
+    this._waitingFor = null; // it, while it is not running: {title, reloading, state}
+    this._expect = null; // after an apply: {entryId, fingerprint, since}
+    this._waitSince = null;
   }
 
   set hass(hass) {
@@ -251,6 +277,7 @@ class OxrsPanelEditor extends HTMLElement {
   disconnectedCallback() {
     this._resize.disconnect();
     clearTimeout(this._fetchTimer);
+    clearTimeout(this._reloadTimer);
     clearTimeout(this._devicePoll);
   }
 
@@ -275,12 +302,13 @@ class OxrsPanelEditor extends HTMLElement {
   async _fetch() {
     if (!this._hass) return;
     this._lastFetch = Date.now();
-    const previousId = this._stored?.entry_id;
+    clearTimeout(this._reloadTimer);
     try {
       const result = await this._hass.callWS({ type: WS.panels });
       this._panels = result.panels || [];
       this._types = result.types || [];
       this._discovered = result.discovered || [];
+      this._unavailable = result.unavailable || [];
       this._error = null;
       try {
         this._favourites = (await this._hass.callWS({ type: WS.favourites })).items || [];
@@ -291,13 +319,51 @@ class OxrsPanelEditor extends HTMLElement {
       this._error = err?.message || String(err);
     }
     this._loading = false;
-    // Keep showing the same panel if it is still there.
-    const index = this._panels.findIndex((p) => p.entry_id === previousId);
-    this._panelIndex = index >= 0 ? index : Math.min(this._panelIndex, Math.max(0, this._panels.length - 1));
-    if (this._draft && this._draft.entry_id !== this._stored?.entry_id) this._clearDraft();
-    if (this._draft) await this._refreshPreview(false);
+    const again = this._choosePanel();
+    if (this._draft && this._draft.entry_id !== this._currentEntryId) this._clearDraft();
+    if (this._draft && !this._waitingFor) await this._refreshPreview(false);
     this._watch();
     this._renderAll();
+    if (again) this._reloadTimer = setTimeout(() => this._fetch(), RELOAD_POLL_MS);
+  }
+
+  // Keep showing the panel being edited. While it reloads (after every apply) it is
+  // not in the list for a moment: wait for it rather than jump to another panel.
+  // Returns whether to ask again shortly.
+  _choosePanel() {
+    const wanted = this._currentEntryId;
+    const index = wanted ? this._panels.findIndex((p) => p.entry_id === wanted) : -1;
+    const expect = this._expect && this._expect.entryId === wanted ? this._expect : null;
+    const pending = index < 0 && wanted ? (this._unavailable || []).find((u) => u.entry_id === wanted) : null;
+    this._waitingFor = null;
+    if (index >= 0 && expect && expect.fingerprint && this._panels[index].fingerprint !== expect.fingerprint) {
+      // Still the panel as it was: the reload with the changes hasn't happened yet.
+      if (Date.now() - expect.since < RELOAD_WAIT_MS) {
+        this._panelIndex = index;
+        this._waitingFor = { title: this._panels[index].title, reloading: true };
+        return true;
+      }
+      this._expect = null;
+    }
+    if (index >= 0) {
+      this._panelIndex = index;
+      this._expect = null;
+      this._waitSince = null;
+      return false;
+    }
+    if (pending) {
+      this._waitSince = this._waitSince || Date.now();
+      this._waitingFor = pending;
+      if (pending.reloading && Date.now() - this._waitSince < RELOAD_WAIT_MS) return true;
+      return false; // it failed to load, or is taking too long: say so, and stop asking
+    }
+    // Gone (deleted), or none chosen yet: the first panel.
+    this._expect = null;
+    this._waitSince = null;
+    this._panelIndex = Math.min(this._panelIndex, Math.max(0, this._panels.length - 1));
+    this._currentEntryId = this._panels[this._panelIndex]?.entry_id || null;
+    remember(LAST_PANEL_KEY, this._currentEntryId);
+    return false;
   }
 
   _watch() {
@@ -329,6 +395,8 @@ class OxrsPanelEditor extends HTMLElement {
   }
 
   get _stored() {
+    // Nothing to edit while the panel being edited is reloading.
+    if (this._waitingFor) return null;
     return this._panels[this._panelIndex];
   }
 
@@ -446,7 +514,7 @@ class OxrsPanelEditor extends HTMLElement {
     this._applying = true;
     this._renderBar();
     try {
-      await this._hass.callWS({
+      const saved = await this._hass.callWS({
         type: WS.apply,
         entry_id: this._draft.entry_id,
         tiles: this._draft.tiles,
@@ -455,12 +523,13 @@ class OxrsPanelEditor extends HTMLElement {
         settings: this._draft.settings,
         fingerprint: this._draft.base,
       });
+      this._expect = { entryId: this._draft.entry_id, fingerprint: saved?.fingerprint || null, since: Date.now() };
+      this._currentEntryId = this._draft.entry_id;
       this._clearDraft();
       this._selected = null;
       this._sheetMode = null;
       this._form = null;
-      this._say("Sent to the panel.");
-      await new Promise((resolve) => setTimeout(resolve, APPLY_SETTLE_MS));
+      this._say("Saved. The panel reloads with the changes and is sent them.");
       await this._fetch();
     } catch (err) {
       this._say(err?.message || String(err), true);
@@ -526,11 +595,15 @@ class OxrsPanelEditor extends HTMLElement {
     try {
       const result = await this._hass.callWS({ type: WS.addDiscovered, flow_id: found.flow_id });
       this._say(`Added ${result.title || found.client_id}. It is sent its settings when it next connects.`);
-      await new Promise((resolve) => setTimeout(resolve, APPLY_SETTLE_MS));
+      // Show the new panel once it is running, unless there are changes to another one first.
+      if (result.entry_id && !(this._draft && this._draft.changes)) {
+        this._clearDraft();
+        this._currentEntryId = result.entry_id;
+        remember(LAST_PANEL_KEY, result.entry_id);
+        this._expect = { entryId: result.entry_id, fingerprint: null, since: Date.now() };
+        this._waitSince = Date.now();
+      }
       await this._fetch();
-      // Show the new panel, unless there are changes to another one to deal with first.
-      const index = this._panels.findIndex((p) => p.entry_id === result.entry_id);
-      if (index >= 0 && !(this._draft && this._draft.changes)) this._switchPanel(index);
     } catch (err) {
       this._say(err?.message || String(err), true);
       await this._fetch();
@@ -548,6 +621,11 @@ class OxrsPanelEditor extends HTMLElement {
     }
     this._clearDraft();
     this._panelIndex = index;
+    this._currentEntryId = this._panels[index]?.entry_id || null;
+    remember(LAST_PANEL_KEY, this._currentEntryId);
+    this._expect = null;
+    this._waitingFor = null;
+    this._waitSince = null;
     this._screenIndex = 0;
     this._selected = null;
     this._sheetMode = null;
@@ -574,10 +652,15 @@ class OxrsPanelEditor extends HTMLElement {
 
   _renderToolbar() {
     const select = this._panelSelect;
+    const waiting = this._waitingFor;
+    const listed = this._panels.some((p) => p.entry_id === this._currentEntryId);
     select.replaceChildren(
-      ...this._panels.map((p, i) => el("option", { value: i, selected: i === this._panelIndex }, p.title))
+      ...this._panels.map((p, i) =>
+        el("option", { value: i, selected: !(waiting && !listed) && i === this._panelIndex }, p.title)),
+      // The panel being edited stays in the list while it reloads.
+      waiting && !listed ? el("option", { value: -1, selected: true, disabled: true }, `${waiting.title || "Panel"} (reloading…)`) : null
     );
-    select.style.display = this._panels.length > 1 ? "" : "none";
+    select.style.display = this._panels.length + (waiting && !listed ? 1 : 0) > 1 ? "" : "none";
   }
 
   _renderStage() {
@@ -587,6 +670,17 @@ class OxrsPanelEditor extends HTMLElement {
     if (this._loading) return stage.append(el("div", { class: "message" }, "Loading panels…"));
     if (this._error) return stage.append(el("div", { class: "message error" }, `Couldn't load the panels: ${this._error}`));
     add(stage, this._discoveredBanner());
+    const waiting = this._waitingFor;
+    if (waiting) {
+      const title = waiting.title || "The panel";
+      return stage.append(el(
+        "div",
+        { class: waiting.reloading ? "message" : "message error" },
+        waiting.reloading
+          ? `${title} is reloading with the changes…`
+          : `${title} couldn't be started (${String(waiting.state || "").replace(/_/g, " ")}). Look at it under Settings → Devices & services, or choose another panel.`
+      ));
+    }
     const view = this._view;
     if (!view) return stage.append(el("div", { class: "message" }, "No OXRS panel is set up and running."));
 
@@ -1878,6 +1972,7 @@ class OxrsPanelEditor extends HTMLElement {
       if (this._draft && this._draft.entry_id === state.entryId) this._clearDraft();
       this._closeDevice(false);
       this._panelIndex = 0;
+      this._currentEntryId = null;
       this._screenIndex = 0;
       this._say(`Deleted ${title}.`);
       await this._fetch();
