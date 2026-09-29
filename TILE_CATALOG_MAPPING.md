@@ -1035,10 +1035,9 @@ view, which was removed.
   messages as it does from the integration page. Favourites (`favourites.py`, own Store
   `oxrs_touchpanel_favourites`, shared by every panel, max 60): the tile less screen /
   tile; the same tile elsewhere is the same favourite; old action tiles can't be one.
-  Frequently used: every panel's tiles (the draft for this one) grouped by
-  `setup_of` - less place and binding (entity_id, action_entity, sublabel and second
-  sensor, playlists, label) - most first, 8 shown. `editor/suggestions` returns both with
-  `fits` for the chosen free place (`fitting_sizes`); `editor/tile_form` takes a
+  (v2.6.0 also offered "frequently used" setups; v2.7.2 dropped them at the user's
+  request - two lists made the picker cluttered.) `editor/suggestions` returns the
+  favourites with `fits` for the chosen free place (`fitting_sizes`); `editor/tile_form` takes a
   `template` for a new tile and pre-fills the serialized form with it (`_prefill`: only
   values the form offers), choosing the template's size when it fits. Submitting is the
   ordinary `build_tile`, so a placed favourite is checked like any new tile.
@@ -1055,5 +1054,21 @@ view, which was removed.
   second for up to a minute - while the panel is missing but reloading, or still shows
   the old fingerprint after an apply; a panel that failed to start is named with its
   state instead of silently replaced.
+- **The page never changes panel by itself (v2.7.2).** v2.7.1 still shifted focus in
+  two ways: a panel running but whose view failed to build was in neither `panels` nor
+  `unavailable`, so the page took it for deleted and moved on; and `_fetch` took on the
+  new panel list before an await (the favourites read) and chose the panel after it, so
+  for that moment the old index pointed at another panel. Now `unavailable` is every
+  configured entry that isn't drawn (running-but-not-drawn counts as reloading), the page
+  leaves its panel only when it is in neither list (deleted), keeps waiting with no
+  limit (1 s polls for a minute, then 10 s), gathers both answers before taking either
+  on, and ignores the answer to any read older than the latest (`_fetchSeq`). Tested by
+  sampling the page every 20 ms through apply, reload and three failed view builds, with
+  entity-driven reads every 0.7 s: never another panel. Also: the sidebar panel's config
+  carries the version; a page left open across an update (whose browser keeps running the
+  old code - the "oxrs-panel-editor has already been used" error in the log) now shows
+  "reload to use the new version", and the define is guarded so it no longer throws.
+  The device page's firmware version uses `async_get_device_by_identifier` where HA has
+  it (`async_get_device` is deprecated, gone in 2027.8).
 - **Not yet:** nothing from the dialog is left out; the dialog stays for those who prefer it.
 

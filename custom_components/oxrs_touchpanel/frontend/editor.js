@@ -99,6 +99,17 @@ const REFRESH_MS = 1000;
 // minute. Found panels being added are waited for the same way.
 const RELOAD_POLL_MS = 1000;
 const RELOAD_WAIT_MS = 60000;
+// After that first minute it keeps asking, less often: the page never gives up on the
+// panel being edited, and never moves to another one by itself.
+const RELOAD_SLOW_POLL_MS = 10000;
+// This page's own version (its module URL carries it), to compare with the installed one.
+const VERSION = (() => {
+  try {
+    return new URL(import.meta.url).searchParams.get("v");
+  } catch (err) {
+    return null;
+  }
+})();
 // The panel last shown, so a reload of the page comes back to it.
 const LAST_PANEL_KEY = "oxrs-panels:last-panel";
 
@@ -264,6 +275,14 @@ class OxrsPanelEditor extends HTMLElement {
 
   set panel(panel) {
     this._panelConfig = panel;
+    // Home Assistant hands a page left open across an update the new version's config,
+    // but the browser keeps running this (older) code until the page is reloaded.
+    const installed = panel?.config?.version;
+    const outdated = !!(installed && VERSION && installed !== VERSION);
+    if (outdated !== !!this._outdated) {
+      this._outdated = outdated;
+      if (this._built) this._renderStage();
+    }
   }
 
   get _static() {
@@ -303,67 +322,82 @@ class OxrsPanelEditor extends HTMLElement {
     if (!this._hass) return;
     this._lastFetch = Date.now();
     clearTimeout(this._reloadTimer);
+    // Reads can overlap (an entity changing while an apply reads back); only the answer
+    // to the latest one counts, so a slow early answer can't undo a newer one.
+    const seq = (this._fetchSeq = (this._fetchSeq || 0) + 1);
+    // Both answers are gathered first and taken on together, with the choice of panel,
+    // so the page never holds a new list with the old choice - not even between awaits.
+    let result = null;
+    let favourites = this._favourites || [];
+    let error = null;
     try {
-      const result = await this._hass.callWS({ type: WS.panels });
+      result = await this._hass.callWS({ type: WS.panels });
+      try {
+        favourites = (await this._hass.callWS({ type: WS.favourites })).items || [];
+      } catch (err) {
+        // keep the favourites as they were
+      }
+    } catch (err) {
+      error = err?.message || String(err);
+    }
+    if (seq !== this._fetchSeq) return;
+    if (result) {
       this._panels = result.panels || [];
       this._types = result.types || [];
       this._discovered = result.discovered || [];
       this._unavailable = result.unavailable || [];
-      this._error = null;
-      try {
-        this._favourites = (await this._hass.callWS({ type: WS.favourites })).items || [];
-      } catch (err) {
-        this._favourites = this._favourites || [];
-      }
-    } catch (err) {
-      this._error = err?.message || String(err);
     }
+    this._favourites = favourites;
+    this._error = error;
     this._loading = false;
     const again = this._choosePanel();
     if (this._draft && this._draft.entry_id !== this._currentEntryId) this._clearDraft();
     if (this._draft && !this._waitingFor) await this._refreshPreview(false);
     this._watch();
     this._renderAll();
-    if (again) this._reloadTimer = setTimeout(() => this._fetch(), RELOAD_POLL_MS);
+    if (again) this._reloadTimer = setTimeout(() => this._fetch(), again);
   }
 
-  // Keep showing the panel being edited. While it reloads (after every apply) it is
-  // not in the list for a moment: wait for it rather than jump to another panel.
-  // Returns whether to ask again shortly.
+  // Keep showing the panel being edited. The page never moves to another panel on its
+  // own - only the user does that, or the panel being deleted. While the panel isn't
+  // drawn (reloading after an apply, starting, or its view couldn't be built this time)
+  // the page waits for it and asks again: every second for a minute, then every ten.
+  // Returns how long to wait before asking again, or 0.
   _choosePanel() {
     const wanted = this._currentEntryId;
     const index = wanted ? this._panels.findIndex((p) => p.entry_id === wanted) : -1;
     const expect = this._expect && this._expect.entryId === wanted ? this._expect : null;
     const pending = index < 0 && wanted ? (this._unavailable || []).find((u) => u.entry_id === wanted) : null;
+    const waited = () => {
+      this._waitSince = this._waitSince || Date.now();
+      return Date.now() - this._waitSince;
+    };
     this._waitingFor = null;
-    if (index >= 0 && expect && expect.fingerprint && this._panels[index].fingerprint !== expect.fingerprint) {
+    if (index >= 0 && expect && expect.fingerprint && this._panels[index].fingerprint !== expect.fingerprint && waited() < RELOAD_WAIT_MS) {
       // Still the panel as it was: the reload with the changes hasn't happened yet.
-      if (Date.now() - expect.since < RELOAD_WAIT_MS) {
-        this._panelIndex = index;
-        this._waitingFor = { title: this._panels[index].title, reloading: true };
-        return true;
-      }
-      this._expect = null;
+      this._panelIndex = index;
+      this._waitingFor = { title: this._panels[index].title, reloading: true };
+      return RELOAD_POLL_MS;
     }
     if (index >= 0) {
       this._panelIndex = index;
       this._expect = null;
       this._waitSince = null;
-      return false;
+      remember(LAST_PANEL_KEY, wanted);
+      return 0;
     }
     if (pending) {
-      this._waitSince = this._waitSince || Date.now();
+      // Set up but not drawn right now: wait for it, however long it takes.
       this._waitingFor = pending;
-      if (pending.reloading && Date.now() - this._waitSince < RELOAD_WAIT_MS) return true;
-      return false; // it failed to load, or is taking too long: say so, and stop asking
+      return waited() < RELOAD_WAIT_MS ? RELOAD_POLL_MS : RELOAD_SLOW_POLL_MS;
     }
-    // Gone (deleted), or none chosen yet: the first panel.
+    // Deleted (it is in neither list), or none chosen yet: the first panel.
     this._expect = null;
     this._waitSince = null;
     this._panelIndex = Math.min(this._panelIndex, Math.max(0, this._panels.length - 1));
     this._currentEntryId = this._panels[this._panelIndex]?.entry_id || null;
     remember(LAST_PANEL_KEY, this._currentEntryId);
-    return false;
+    return 0;
   }
 
   _watch() {
@@ -669,6 +703,18 @@ class OxrsPanelEditor extends HTMLElement {
     stage.replaceChildren();
     if (this._loading) return stage.append(el("div", { class: "message" }, "Loading panels…"));
     if (this._error) return stage.append(el("div", { class: "message error" }, `Couldn't load the panels: ${this._error}`));
+    if (this._outdated) {
+      stage.append(el(
+        "div",
+        { class: "found" },
+        el(
+          "div",
+          { class: "found-row" },
+          el("span", {}, `OXRS panels has been updated to ${this._panelConfig.config.version}. Reload the page to use the new version.`),
+          el("button", { class: "settings-button", onclick: () => window.location.reload() }, "Reload")
+        )
+      ));
+    }
     add(stage, this._discoveredBanner());
     const waiting = this._waitingFor;
     if (waiting) {
@@ -678,7 +724,7 @@ class OxrsPanelEditor extends HTMLElement {
         { class: waiting.reloading ? "message" : "message error" },
         waiting.reloading
           ? `${title} is reloading with the changes…`
-          : `${title} couldn't be started (${String(waiting.state || "").replace(/_/g, " ")}). Look at it under Settings → Devices & services, or choose another panel.`
+          : `${title} couldn't be started (${String(waiting.state || "").replace(/_/g, " ")}). The page keeps checking; look at it under Settings → Devices & services, or choose another panel.`
       ));
     }
     const view = this._view;
@@ -2201,7 +2247,7 @@ class OxrsPanelEditor extends HTMLElement {
     if (!FORM_MODES.has(this._sheetMode)) this._renderSheet();
   }
 
-  // Favourites and the setups used most, for an empty place; read when the place is picked.
+  // The favourites, for an empty place; read when the place is picked.
   async _loadSuggestions(s) {
     const key = `${this._stored?.entry_id}/${s.screen}/${s.tile}`;
     if (this._suggest?.key === key && (this._suggest.data || this._suggest.loading)) return;
@@ -2216,7 +2262,7 @@ class OxrsPanelEditor extends HTMLElement {
       });
       if (this._suggest?.key === key) this._suggest = { key, data };
     } catch (err) {
-      if (this._suggest?.key === key) this._suggest = { key, data: { favourites: [], frequent: [] }, error: err?.message || String(err) };
+      if (this._suggest?.key === key) this._suggest = { key, data: { favourites: [] }, error: err?.message || String(err) };
     }
     const now = this._selected;
     if (now && now.kind === "empty" && `${this._stored?.entry_id}/${now.screen}/${now.tile}` === key && this._sheetMode === "types") {
@@ -2224,15 +2270,15 @@ class OxrsPanelEditor extends HTMLElement {
     }
   }
 
-  _suggestionCard(s, item, kind) {
+  _favouriteCard(s, item) {
     const picture = item.icon_uri
       ? el("span", { class: "type-icon", style: { maskImage: `url("${item.icon_uri}")`, webkitMaskImage: `url("${item.icon_uri}")` } })
       : BUILTIN_ICONS.has(item.icon)
         ? el("span", { class: "type-icon", style: { maskImage: `url("${this._static}/icons/${item.icon}.png")`, webkitMaskImage: `url("${this._static}/icons/${item.icon}.png")` } })
         : el("span", { class: "type-icon blank" });
     const size = item.size[0] * item.size[1] > 1 ? ` · ${item.size[0]} × ${item.size[1]}` : "";
-    const title = kind === "favourite" ? item.name || item.type_label : item.type_label;
-    // What sets a setup apart from another of its kind.
+    const title = item.name || item.type_label;
+    // What sets it apart from another tile of its kind.
     const tile = item.tile || {};
     const marks = [
       tile.icon && !String(tile.icon).startsWith("_") ? `icon ${tile.icon}` : null,
@@ -2240,7 +2286,7 @@ class OxrsPanelEditor extends HTMLElement {
       Array.isArray(tile.background_color) && tile.background_color.some((c) => c) ? "own colour" : null,
       tile.album_art ? "album art" : null,
     ].filter(Boolean).map((m) => ` · ${m}`).join("");
-    const detail = kind === "favourite" ? `${item.type_label}${size}${marks}` : `used ${item.count}×${size}${marks}`;
+    const detail = `${item.type_label}${size}${marks}`;
     const swatch = Array.isArray(tile.background_color) && tile.background_color.some((c) => c)
       ? el("span", { class: "swatch", style: { background: `rgb(${tile.background_color.join(",")})` } })
       : null;
@@ -2250,13 +2296,12 @@ class OxrsPanelEditor extends HTMLElement {
         class: "type suggestion",
         disabled: !item.fits,
         title: item.fits ? "" : "Too big for this place",
-        onclick: () => this._openForm({ tileType: item.type, screen: s.screen, position: s.tile, template: item.tile, from: kind }),
+        onclick: () => this._openForm({ tileType: item.type, screen: s.screen, position: s.tile, template: item.tile, from: "favourite" }),
       },
       picture,
       el("span", { class: "suggestion-text" }, el("span", {}, title), el("span", { class: "suggestion-detail" }, item.fits ? detail : `${detail} · too big here`)),
       swatch
     );
-    if (kind !== "favourite") return card;
     return el(
       "div",
       { class: "suggestion-row" },
@@ -2275,11 +2320,7 @@ class OxrsPanelEditor extends HTMLElement {
     } else {
       if (suggest.favourites.length) {
         sheet.append(el("div", { class: "field-label" }, "Favourites"),
-          el("div", { class: "types" }, suggest.favourites.map((f) => this._suggestionCard(s, f, "favourite"))));
-      }
-      if (suggest.frequent.length) {
-        sheet.append(el("div", { class: "field-label" }, "Frequently used"),
-          el("div", { class: "types" }, suggest.frequent.map((f) => this._suggestionCard(s, f, "frequent"))));
+          el("div", { class: "types" }, suggest.favourites.map((f) => this._favouriteCard(s, f))));
       }
       if (!suggest.favourites.length) {
         sheet.append(el("p", { class: "hint" }, "Tip: tap a tile and choose Add to favourites to have it here, on every panel."));
@@ -2359,9 +2400,7 @@ class OxrsPanelEditor extends HTMLElement {
     const spec = form.spec;
     sheet.append(el("h3", {}, `${editing ? "Edit" : "Add"} · ${spec.type_label}`));
     sheet.append(el("p", { class: "hint" }, `Screen ${spec.screen}, position ${spec.position}`));
-    if (form.target.from === "frequent") {
-      sheet.append(el("p", { class: "hint" }, "Set up like your other tiles of this kind. Choose what it controls, and give it a label."));
-    } else if (form.target.from === "favourite") {
+    if (form.target.from === "favourite") {
       sheet.append(el("p", { class: "hint" }, "From your favourites. Change anything before adding it."));
     }
 
@@ -2653,4 +2692,6 @@ textarea.text { margin-top: 8px; font-family: monospace; font-size: 12px; resize
 input[type=file] { font: inherit; font-size: 13px; color: var(--primary-text-color); max-width: 100%; }
 `;
 
-customElements.define("oxrs-panel-editor", OxrsPanelEditor);
+// A newer version loaded into a page that already has this element can't redefine it
+// (the browser refuses); the open page shows the update notice instead of an error.
+if (!customElements.get("oxrs-panel-editor")) customElements.define("oxrs-panel-editor", OxrsPanelEditor);

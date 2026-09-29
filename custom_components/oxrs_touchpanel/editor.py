@@ -20,7 +20,7 @@ applied. The background images and custom icons are a library shared by every pa
 so adding or deleting one there takes effect at once, as it does in the dialog.
 The Device sheet restarts the panel, updates its firmware from a file the user chooses
 (uploaded to FirmwareUploadView; firmware.py), or deletes it; panels Home Assistant has found on MQTT can be added from the page. Favourite tiles
-and the setups used most (favourites.py) fill an empty place quickly.
+(favourites.py) fill an empty place quickly.
 """
 
 from __future__ import annotations
@@ -174,7 +174,8 @@ async def async_setup_editor(hass: HomeAssistant, version: str) -> None:
             sidebar_icon="mdi:tablet-dashboard",
             module_url=f"{STATIC_URL}/editor.js?v={version}",
             require_admin=True,
-            config={"static_url": STATIC_URL},
+            # The version lets a page left open across an update say it should be reloaded.
+            config={"static_url": STATIC_URL, "version": version},
         )
         hass.data[_PANEL_SHOWN] = True
 
@@ -342,7 +343,7 @@ def ws_panels(hass: HomeAssistant, connection: websocket_api.ActiveConnection, m
             "panels": panels,
             "types": tile_types(hass),
             "discovered": discovered,
-            "unavailable": unavailable_panels(hass),
+            "unavailable": unavailable_panels(hass, {p["entry_id"] for p in panels}),
         },
     )
 
@@ -352,27 +353,31 @@ def ws_panels(hass: HomeAssistant, connection: websocket_api.ActiveConnection, m
 _RELOADING_STATES = {"setup_in_progress", "not_loaded", "unload_in_progress", "setup_retry"}
 
 
-def unavailable_panels(hass: HomeAssistant) -> list[dict[str, Any]]:
-    """Panels that are set up but not running now - reloading, or failed to load.
+def unavailable_panels(hass: HomeAssistant, drawn: set[str] | None = None) -> list[dict[str, Any]]:
+    """Panels that are set up but not drawn now: reloading, failed to load, or running
+    but their view could not be built this time.
 
-    So the page can wait for the one being edited instead of losing it.
+    So the page can keep the one being edited - it only ever leaves a panel that has
+    been deleted, which is one that is in neither list.
     """
-    running = hass.data.get(DOMAIN) or {}
+    drawn = drawn if drawn is not None else set(hass.data.get(DOMAIN) or {})
     out = []
     try:
         entries = hass.config_entries.async_entries(DOMAIN, include_ignore=False, include_disabled=False)
     except Exception:  # noqa: BLE001 - only a help to the page
         return out
     for entry in entries:
-        if entry.entry_id in running:
+        if entry.entry_id in drawn:
             continue
-        state = getattr(entry.state, "value", entry.state)
+        state = str(getattr(entry.state, "value", entry.state))
         out.append(
             {
                 "entry_id": entry.entry_id,
                 "title": entry.title,
-                "state": str(state),
-                "reloading": str(state) in _RELOADING_STATES,
+                "state": state,
+                # Loaded but not drawn: caught between two reads, or its view failed
+                # (logged) - either way worth waiting for, not a reason to leave it.
+                "reloading": state in _RELOADING_STATES or state == "loaded",
             }
         )
     return out
@@ -610,7 +615,7 @@ _TARGET = {
         **_DRAFT,
         **_TARGET,
         vol.Optional("tile_type"): str,
-        # A new tile's form can start from a favourite or a frequently used setup.
+        # A new tile's form can start from a favourite.
         vol.Optional("template"): dict,
     }
 )
@@ -1274,7 +1279,7 @@ async def ws_delete_panel(hass: HomeAssistant, connection: websocket_api.ActiveC
     connection.send_result(msg["id"], {"ok": True})
 
 
-# ── favourites and frequently used setups ────────────────────────────────
+# ── favourites ────────────────────────────────────────────────────────────
 
 
 def _suggestion(hass: HomeAssistant, tile: dict[str, Any], fits: bool) -> dict[str, Any]:
@@ -1311,11 +1316,10 @@ def _suggestion(hass: HomeAssistant, tile: dict[str, Any], fits: bool) -> dict[s
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_suggestions(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
-    """Favourites and the setups used most, and whether each fits at a free place.
+    """The favourites, and whether each fits at a free place.
 
-    The draft's tiles stand in for this panel's stored ones, so a tile just added
-    counts. A type this Home Assistant can't offer now (playlists without Music
-    Assistant) is left out; one too big for the place is marked, not left out.
+    A type this Home Assistant can't offer now (playlists without Music Assistant) is
+    left out; one too big for the place is marked, not left out.
     """
     panel = _panel(hass, msg["entry_id"])
     if panel is None:
@@ -1334,11 +1338,6 @@ async def ws_suggestions(hass: HomeAssistant, connection: websocket_api.ActiveCo
         return fitting is None or size_value(tile_span(tile.get(CONF_SPAN))) in fitting
 
     store = await favourites.async_get(hass)
-    all_tiles = [
-        tile
-        for entry_id, other in (hass.data.get(DOMAIN) or {}).items()
-        for tile in (msg["tiles"] if entry_id == msg["entry_id"] else other.tiles)
-    ]
     connection.send_result(
         msg["id"],
         {
@@ -1346,10 +1345,6 @@ async def ws_suggestions(hass: HomeAssistant, connection: websocket_api.ActiveCo
                 {"id": item["id"], **_suggestion(hass, item["tile"], fits(item["tile"]))}
                 for item in store.items
                 if item["tile"].get(CONF_TYPE) in offered
-            ],
-            "frequent": [
-                {"count": entry["count"], **_suggestion(hass, entry["tile"], fits(entry["tile"]))}
-                for entry in favourites.frequent(t for t in all_tiles if t.get(CONF_TYPE) in offered)
             ],
         },
     )

@@ -58,8 +58,7 @@ on/off state, labels and album art - and lets you change them:
   temperature correction, background colour, icon colour and album art sizing. The
   preview shows the colours and brightness before you apply them.
 - Tap a tile, then **Add to favourites**, to keep it for any panel. Tapping an empty
-  space offers your favourites and the tile setups you use most (the same kind of
-  tile, icon, size and colours, whatever it is bound to), ready to place.
+  space offers your favourites, ready to place.
 - A panel Home Assistant finds on MQTT shows at the top of the page, with **Add panel**.
 - Tap **Device** to see the panel's board, address and firmware, restart it, update
   its firmware, or delete the panel. To update, choose the firmware file - the OTA
