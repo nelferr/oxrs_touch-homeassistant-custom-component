@@ -1093,5 +1093,18 @@ view, which was removed.
   drops a larger packet whole, header and topic counted): conf, images, icons and album
   art over it are logged once per setup, still sent (other builds may take more - the
   album art budget stays a setting). A 99-tile conf is about 9 KB.
+- **No screen removal for a panel that just came online (v2.7.4).** Removing the screens
+  before `conf/` is this integration's own step, not in the OXRS docs (which only
+  document `{"screens":[{"screen":n,"action":"remove"}]}` as a command): `jsonConfig`
+  only adds, `createScreen` keeps an existing screen of the same grid and `createTile`
+  replaces a tile in place, so removal is the only way to drop what is no longer
+  configured. The firmware does it by showing `SCREEN_SETTINGS` (`SCREEN_END + 1` = 33),
+  hence `{"screen":33,"type":"screen","event":"change","state":"loaded"}` on every push.
+  A config change always reloads the entry, so one `OxrsPanel` only ever has one
+  configuration: once it has sent it from start to finish with the panel online
+  (`_synced`), the panel holds that or - restarted - nothing, and later connections get
+  `async_push_config(clean=False)`. Still clean: the setup push (start-up, Apply), the
+  Push configuration button, and the first connection of a panel that was offline (or
+  dropped mid-push) when set up, which may hold an older configuration.
 - **Not yet:** nothing from the dialog is left out; the dialog stays for those who prefer it.
 

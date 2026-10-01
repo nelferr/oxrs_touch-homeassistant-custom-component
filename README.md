@@ -81,6 +81,12 @@ art last, since that has to be fetched from each player first. If a message is t
 for the panel's firmware (16 KB, including album art), the Home Assistant log says so:
 the panel would silently ignore it.
 
+After **Apply**, at start-up and for **Push configuration**, the panel's screens are
+removed before they are sent again, so a tile or screen you deleted goes from the
+panel too; the panel shows its own Settings screen for a moment while it does this (it
+reports that screen as number 33). A panel that has simply restarted or reconnected is
+sent its configuration without that step.
+
 ## Support
 
 - **Issues & Bug Reports** — [GitHub Issues](https://github.com/nelferr/oxrs_touch-homeassistant-custom-component/issues)
