@@ -288,6 +288,10 @@ class OxrsPanel:
         # offline or Home Assistant loses the broker, cleared when a push starts.
         self._push_task: asyncio.Task | None = None
         self._needs_push = True
+        # Whether the panel has been sent this configuration while online. From
+        # then on it holds either exactly this (it only reconnected) or nothing
+        # (it restarted), so there is nothing stale on it to remove first.
+        self._synced = False
         # Pushes never interleave: a second one waits for the first to finish.
         self._push_lock = asyncio.Lock()
         # What has already been warned about for being too big for the panel.
@@ -684,15 +688,17 @@ class OxrsPanel:
         self._unsubs.clear()
 
     @callback
-    def _schedule_push(self) -> None:
+    def _schedule_push(self, clean: bool = True) -> None:
         """Configure the panel in the background, replacing a push under way.
 
         A newer push supersedes an older one: whatever the old one had sent, the
-        new one starts again from removing the screens.
+        new one starts again from the beginning.
         """
         self._needs_push = False
         self._cancel_push()
-        self._push_task = self.hass.async_create_task(self.async_push_config())
+        self._push_task = self.hass.async_create_task(
+            self.async_push_config(clean=clean)
+        )
 
     @callback
     def _cancel_push(self) -> None:
@@ -717,7 +723,7 @@ class OxrsPanel:
         await mqtt.async_publish(self.hass, topic, payload)
 
     # ── outbound: HA -> panel ────────────────────────────────────────────────
-    async def async_push_config(self) -> None:
+    async def async_push_config(self, *, clean: bool = True) -> None:
         """Configure the panel: screens and tiles, images and icons, tile states,
         and album art last.
 
@@ -726,18 +732,25 @@ class OxrsPanel:
         state). Album art comes after the tile states because it is fetched from
         each player and encoded here, which can take seconds; the tiles should
         not sit blank waiting for it.
+
+        clean first removes every screen, which is not part of that sequence but
+        is the only way to drop a tile or screen that is no longer configured:
+        conf/ only adds and replaces. It is what a panel needs when it may hold
+        an older configuration (after Apply, at start-up, or on request) and is
+        skipped for one that has just come online holding this one or nothing -
+        the firmware shows its Settings screen (33) while removing.
         """
         async with self._push_lock:
-            await self._async_push_config()
+            await self._async_push_config(clean)
 
-    async def _async_push_config(self) -> None:
+    async def _async_push_config(self, clean: bool) -> None:
         screens = {tile[CONF_SCREEN] for tile in self.tiles}
 
         # Clean slate: remove every screen we manage (current + previously
         # pushed) so stale/duplicate tiles are dropped and the panel exactly
         # matches our config. Removing screen 1 recreates it empty.
         screen_ids = sorted(set(screens) | self._pushed_screens)
-        if screen_ids:
+        if clean and screen_ids:
             await mqtt.async_publish(
                 self.hass,
                 topic_cmnd(self.client_id),
@@ -780,6 +793,10 @@ class OxrsPanel:
                 await mqtt.async_publish(
                     self.hass, topic_cmnd(self.client_id), json.dumps({"tiles": states})
                 )
+        # Sent from start to finish with the panel online throughout ("offline"
+        # cancels a scheduled push): it now holds this configuration.
+        if self.available:
+            self._synced = True
 
     def build_conf(
         self,
@@ -1376,7 +1393,7 @@ class OxrsPanel:
             self._cancel_push()
             self._needs_push = True
         elif not getattr(msg, "retain", False) or self._needs_push:
-            self._schedule_push()
+            self._schedule_push(clean=not self._synced)
 
     @callback
     def _on_mqtt_connection(self, connected: bool) -> None:
